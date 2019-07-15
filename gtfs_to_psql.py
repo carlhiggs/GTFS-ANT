@@ -46,14 +46,11 @@ args = parser.parse_args()
 
 
 # connect to database
-conn = psycopg2.connect(dbname=args.db, user=args.U, password=args.w)
-conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT) # <-- ADD THIS LINE
-curs = conn.cursor()
 
-engine = create_engine("postgresql://{user}:{pwd}@{host}/{db}".format(user = args.U,
-                                                                      pwd  = args.w,
-                                                                      host = 'local_host',
-                                                                      db   = args.db))
+# engine = create_engine("postgresql://{user}:{pwd}@{host}/{db}".format(user = args.U,
+                                                                      # pwd  = args.w,
+                                                                      # host = 'local_host',
+                                                                      # db   = args.db))
 print(task)
 print('''
 It is recommended that you ensure your GTFS file names are
@@ -172,6 +169,145 @@ CREATE TABLE trips
 );
 '''
 
+create_30_mins_stops_function = '''
+CREATE OR REPLACE FUNCTION bus_30_min_stops(date) RETURNS SETOF text AS $$
+DECLARE
+  service_date ALIAS FOR $1;
+  -- for now commented out; i think a second agency_id arg would be good alternative to route colour
+  -- agency_id ALIAS FOR $2;
+BEGIN
+
+DROP TABLE IF EXISTS stop_departure_bus CASCADE;
+CREATE TABLE stop_departure_bus AS
+SELECT DISTINCT
+  routes.route_id,
+  agency_id,
+  route_type,
+  route_color,
+  trips.trip_id,
+  stops.stop_id,
+  stop_sequence,
+  departure_time
+FROM  
+  routes,
+  trips,
+  stop_times,
+  stops,
+  calendar_series
+WHERE
+  routes.route_id = trips.route_id AND
+  trips.service_id = calendar_series.service_id AND
+  stop_times.trip_id = trips.trip_id AND
+  stop_times.stop_id = stops.stop_id AND
+  -- daytime bus services
+  stop_times.departure_time BETWEEN '07:00:00' AND '19:00:00' AND
+  routes.route_type = '3' AND
+  -- exclude coach services
+  --  NOTE!!!!! CH 20190715 This will not work on old GTFS data which does not have this field
+  routes.route_color != 'A57FB2' AND
+  -- offered on service_date
+  calendar_series.date = to_number(to_char(service_date, 'YYYYMMDD'), '99999999')
+ORDER BY
+  trip_id,
+  stop_sequence;
+
+DROP MATERIALIZED VIEW IF EXISTS stop_departure_intervals_bus CASCADE;
+CREATE MATERIALIZED VIEW stop_departure_intervals_bus AS
+SELECT
+  stop_id,
+  departure_time,
+  lag(departure_time) OVER (PARTITION BY stop_id ORDER BY departure_time DESC) as next_departure_time
+FROM
+  stop_departure_bus
+ORDER BY
+  stop_id,
+  departure_time;
+
+-- Find earliest stop after 7.00am
+CREATE OR REPLACE VIEW stop_first_peak_service_bus AS
+SELECT 
+  stop_id,
+  MIN (departure_time)
+FROM 
+  stop_departure_intervals_bus
+GROUP BY
+  stop_id
+ORDER BY
+  stop_id;
+
+-- Find stops with a peak service commencement before 7.30am
+CREATE OR REPLACE VIEW stop_first_service_before_0730_bus AS
+SELECT
+  stop_id
+FROM
+  stop_first_peak_service_bus
+WHERE
+  min <= '07:30:00';
+
+-- Find latest stop before 7.00pm
+CREATE OR REPLACE VIEW stop_last_peak_service_bus AS
+SELECT 
+  stop_id,
+  MAX (departure_time)
+FROM 
+  stop_departure_intervals_bus
+GROUP BY
+  stop_id
+ORDER BY
+  stop_id;
+
+-- Find stops with a peak service after 6.30pm
+CREATE OR REPLACE VIEW stop_last_service_after_1830_bus AS
+SELECT
+  stop_id
+FROM
+  stop_last_peak_service_bus
+WHERE
+  max >= '18:30:00';
+
+-- Find maximum interval between services for stops with a service before 7.30am and after 6.30pm 
+CREATE OR REPLACE VIEW stop_max_interval_bus AS
+SELECT 
+  s.stop_id, 
+  MAX (s.next_departure_time - s.departure_time) AS max_interval
+FROM 
+  stop_departure_intervals_bus AS s,
+  stop_first_service_before_0730_bus AS f,
+  stop_last_service_after_1830_bus AS l
+WHERE
+  s.next_departure_time IS NOT NULL AND
+  s.stop_id = f.stop_id AND
+  s.stop_id = l.stop_id
+GROUP BY
+  s.stop_id
+ORDER BY
+  s.stop_id;
+
+DROP TABLE IF EXISTS stop_30_mins_bus;
+CREATE TABLE stop_30_mins_bus AS
+SELECT 
+  s.agency_id,
+  s.stop_id,
+  s.stop_name,
+  s.stop_lat, 
+  s.stop_lon,
+  s.route_color,
+  s.geom,
+  (SELECT EXTRACT(epoch FROM i.max_interval)/60) AS max_interval
+FROM
+  stop_bus AS s,
+  stop_max_interval_bus AS i 
+WHERE 
+  s.stop_id = i.stop_id AND
+  i.max_interval <= '00:30:00';
+
+RETURN QUERY SELECT stop_id FROM stop_30_mins_bus;
+  
+END;
+$$ LANGUAGE plpgsql;
+'''
+
+
 for root, dirs, files in os.walk(args.dir):
   for file in files:
     if file.endswith(".zip"):
@@ -187,11 +323,16 @@ for root, dirs, files in os.walk(args.dir):
           continue
         else:
             print("\t- Required files are present.")
+            conn = psycopg2.connect(dbname=args.db, user=args.U, password=args.w)
+            conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT) # <-- ADD THIS LINE
+            curs = conn.cursor()
+
             # check if sql database exists
             sql =  '''SELECT 1 FROM pg_catalog.pg_database WHERE datname='{}';'''.format(name)
             curs.execute(sql)
             if len(curs.fetchall())!=0:
               print("\t- Database already exists!")
+              conn.close()
               continue
             else:
               # SQL queries
@@ -215,6 +356,7 @@ for root, dirs, files in os.walk(args.dir):
                     sql = '''COPY {table} FROM STDIN WITH CSV HEADER;'''.format(table = table)
                     curs.copy_expert(sql, myfile)
                   except:
+                    print("\t\t- Issue found with {}... ".format(table))
                     if table=='routes':
                       conn = psycopg2.connect(dbname=name, user=args.U, password=args.w)
                       curs = conn.cursor()
@@ -227,6 +369,8 @@ for root, dirs, files in os.walk(args.dir):
                       '''.format(table = table)
                       curs.copy_expert(sql, myfile)
                     else:
+                        print("  failed.")
+                        conn.close()
                         raise
               print("\t- Updated required tables with data.")
               sql = '''
@@ -234,9 +378,12 @@ for root, dirs, files in os.walk(args.dir):
                     ALTER COLUMN shape_dist_traveled TYPE double precision USING NULLIF(shape_dist_traveled, '')::double precision'''
               curs.execute(sql)
               conn.commit()
-              sql = '''CREATE EXTENSION postgis;SELECT postgis_full_version();'''
+              sql = '''
+              CREATE EXTENSION postgis;
+              CREATE EXTENSION tablefunc;
+              '''
               curs.execute(sql)
               conn.commit()
-              print("\t - Created postgis extension.")
+              print("\t- Created postgis extension.")
               conn.close()
-conn.close()
+
