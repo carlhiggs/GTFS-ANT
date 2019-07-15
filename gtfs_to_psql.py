@@ -387,3 +387,751 @@ for root, dirs, files in os.walk(args.dir):
               print("\t- Created postgis extension.")
               conn.close()
 
+amended_sql_from_ga_editing = '''
+--------------------
+-- Calendar setup -- 
+--------------------
+
+-- needed for crosstab calculations later
+CREATE EXTENSION tablefunc;
+
+-- this generates the series of dates (and dow) for all dates covered by the calendar
+DROP TABLE IF EXISTS calendar_extent;
+CREATE TABLE calendar_extent AS
+SELECT
+  to_number(to_char(date, 'YYYYMMDD'), '99999999') AS date_numeric,
+  extract(dow from date)::int AS dow
+FROM
+  generate_series (
+    (SELECT to_date(to_char(MIN(start_date), '99999999'), 'YYYYMMDD') FROM calendar),
+    (SELECT to_date(to_char(MAX(end_date), '99999999'), 'YYYYMMDD') FROM calendar),
+	interval '1 day'
+  ) date;
+
+-- this generates a table that summarises the maximum number of days a stop_id could be a 30 minute stop by dow
+DROP TABLE IF EXISTS calendar_maximum;
+CREATE TABLE calendar_maximum AS
+SELECT * FROM crosstab (
+  'SELECT DISTINCT
+    stop_id,
+    dow,
+    count(date_numeric) dow_count
+  FROM
+    stops,
+    calendar_extent
+  GROUP BY
+    stop_id,
+    dow
+  ORDER BY
+    stop_id ASC,
+    dow ASC',
+  'SELECT * FROM generate_series(0, 6) ORDER BY 1'
+)
+  AS (
+    stop_id text,
+	sunday int,
+	monday int,
+	tuesday int,
+	wednesday int,
+	thursday int,
+	friday int,
+	saturday int
+)
+;
+
+-- this function generates a series of dates between two days  
+CREATE OR REPLACE FUNCTION dayseries (date, date)
+  RETURNS SETOF timestamp with time zone AS
+$$
+  SELECT * FROM generate_series($1, $2, interval '1d') d
+$$ LANGUAGE SQL IMMUTABLE;
+
+-- this generates a service_id and a series of dates corresponding to the calendar
+DROP TABLE IF EXISTS calendar_series;
+CREATE TABLE calendar_series AS
+SELECT
+  service_id,
+  to_number(to_char(dayseries(to_date(to_char(start_date, '99999999'), 'YYYYMMDD'), to_date(to_char(end_date, '99999999'), 'YYYYMMDD'))::date, 'YYYYMMDD'), '99999999') AS date
+FROM
+  calendar
+ORDER BY
+  service_id,
+  date;
+
+  
+ALTER TABLE calendar_series ADD COLUMN dow integer;
+UPDATE calendar_series SET dow = extract(dow from to_date(to_char(date, '99999999'), 'YYYYMMDD'))::int;
+
+-- this deletes from the series dates on which the named day is "false"
+DELETE FROM calendar_series
+WHERE (service_id, dow) IN (
+  SELECT
+    service_id,
+    dow
+  FROM (
+    SELECT
+      service_id,
+      unnest(
+        array[1, 2, 3, 4, 5, 6, 0]
+      ) AS dow,
+      unnest(
+        array[monday, tuesday, wednesday, thursday, friday, saturday, sunday]
+      ) AS operates
+    FROM calendar) s
+  WHERE
+    operates = 'F');
+  
+-- this deletes services as required based on the calendar_dates table
+DELETE FROM calendar_series
+WHERE (service_id, date) IN (SELECT service_id, date FROM calendar_dates WHERE exception_type = '2');
+
+-- this adds services as required based on the calendar_dates table
+INSERT INTO calendar_series SELECT service_id, date, extract(dow from to_date(to_char(date, '99999999'), 'YYYYMMDD'))::int FROM calendar_dates WHERE exception_type = '1';
+
+--------------------------------------------------
+-- Create train, tram and bus (and coach) stops --
+--------------------------------------------------
+
+SELECT
+  agency_id,
+  route_type
+FROM
+  routes
+GROUP BY
+  agency_id,
+  route_type
+ORDER BY
+  route_type;
+
+-- JA code assumes stops has geom; let's create
+ALTER TABLE stops add column geom geometry(Point, 4326);
+UPDATE stops set geom=st_SetSrid(st_MakePoint(stop_lon, stop_lat), 4326);
+
+DROP TABLE IF EXISTS stop_train;
+CREATE TABLE stop_train AS
+SELECT
+  routes.agency_id,
+  stops.stop_id,
+  stops.stop_name,
+  stops.stop_lat,
+  stops.stop_lon,
+  stops.geom
+FROM
+  public.stops,
+  public.stop_times,
+  public.trips,
+  public.routes
+WHERE 
+  stops.stop_id = stop_times.stop_id AND
+  stop_times.trip_id = trips.trip_id AND
+  trips.route_id = routes.route_id AND
+  -- allow for consideration of both metropolitan and regional trains
+  routes.route_type IN ('1','2') AND
+  routes.agency_id IN('1','2')
+GROUP BY
+  routes.agency_id,
+  stops.stop_id,
+  stops.stop_name,
+  stops.stop_lat,
+  stops.stop_lon,
+  stops.geom
+ORDER BY
+  stops.stop_id;
+
+DROP TABLE IF EXISTS stop_tram;
+CREATE TABLE stop_tram AS
+SELECT
+  routes.agency_id,
+  stops.stop_id,
+  stops.stop_name,
+  stops.stop_lat,
+  stops.stop_lon,
+  stops.geom
+FROM
+  public.stops,
+  public.stop_times,
+  public.trips,
+  public.routes
+WHERE 
+  stops.stop_id = stop_times.stop_id AND
+  stop_times.trip_id = trips.trip_id AND
+  trips.route_id = routes.route_id AND
+  routes.route_type = 0 AND
+  routes.agency_id = '3'
+GROUP BY
+  routes.agency_id,
+  stops.stop_id,
+  stops.stop_name,
+  stops.stop_lat,
+  stops.stop_lon,
+  routes.route_color,
+  stops.geom
+ORDER BY
+  stops.stop_id;
+  
+DROP TABLE IF EXISTS stop_bus;
+CREATE TABLE stop_bus AS
+SELECT
+  routes.agency_id,
+  stops.stop_id,
+  stops.stop_name,
+  stops.stop_lat,
+  stops.stop_lon,
+  routes.route_color,
+  stops.geom
+FROM
+  public.stops,
+  public.stop_times,
+  public.trips,
+  public.routes
+WHERE 
+  stops.stop_id = stop_times.stop_id AND
+  stop_times.trip_id = trips.trip_id AND
+  trips.route_id = routes.route_id AND
+  routes.route_type = 3 AND
+  -- allow for consideration of both metropolitan and regional buses
+  routes.agency_id IN ('4','6')
+GROUP BY
+  routes.agency_id,
+  stops.stop_id,
+  stops.stop_name,
+  stops.stop_lat,
+  stops.stop_lon,
+  routes.route_color,
+  stops.geom
+ORDER BY
+  stops.stop_id;
+  
+DROP TABLE IF EXISTS stop_coach;
+CREATE TABLE stop_coach AS
+SELECT
+  routes.agency_id,
+  stops.stop_id,
+  stops.stop_name,
+  stops.stop_lat,
+  stops.stop_lon,
+  routes.route_color,
+  stops.geom
+FROM
+  public.stops,
+  public.stop_times,
+  public.trips,
+  public.routes
+WHERE 
+  stops.stop_id = stop_times.stop_id AND
+  stop_times.trip_id = trips.trip_id AND
+  trips.route_id = routes.route_id AND
+  routes.route_type = 3 AND
+  routes.agency_id IN ('5')
+GROUP BY
+  routes.agency_id,
+  stops.stop_id,
+  stops.stop_name,
+  stops.stop_lat,
+  stops.stop_lon,
+  routes.route_color,
+  stops.geom
+ORDER BY
+  stops.stop_id;
+
+-----------------------------
+-- TRAIN interval analysis --
+-----------------------------
+
+CREATE OR REPLACE FUNCTION train_30_min_stops(date) RETURNS SETOF text AS $$
+DECLARE
+  service_date ALIAS FOR $1;
+BEGIN
+
+DROP TABLE IF EXISTS stop_departure_train CASCADE;
+CREATE TABLE stop_departure_train AS
+SELECT DISTINCT
+  routes.route_id,
+  agency_id,
+  route_type,
+  route_color,
+  trips.trip_id,
+  stops.stop_id,
+  stop_sequence,
+  departure_time
+FROM  
+  routes,
+  trips,
+  stop_times,
+  stops,
+  calendar_series
+WHERE
+  routes.route_id = trips.route_id AND
+  trips.service_id = calendar_series.service_id AND
+  stop_times.trip_id = trips.trip_id AND
+  stop_times.stop_id = stops.stop_id AND
+  -- daytime train services
+  stop_times.departure_time BETWEEN '07:00:00' AND '19:00:00' AND
+  routes.route_type = 2  AND
+  routes.agency_id IN('1','2')
+  -- offered on service_date
+  calendar_series.date = to_number(to_char(service_date, 'YYYYMMDD'), '99999999')
+ORDER BY
+  trip_id,
+  stop_sequence;
+
+DROP MATERIALIZED VIEW IF EXISTS stop_departure_intervals_train CASCADE;
+CREATE MATERIALIZED VIEW stop_departure_intervals_train AS
+SELECT
+  stop_id,
+  departure_time,
+  lag(departure_time) OVER (PARTITION BY stop_id ORDER BY departure_time DESC) as next_departure_time
+FROM
+  stop_departure_train
+ORDER BY
+  stop_id,
+  departure_time;
+
+-- Find earliest stop after 7.00am
+CREATE OR REPLACE VIEW stop_first_peak_service_train AS
+SELECT 
+  stop_id,
+  MIN (departure_time)
+FROM 
+  stop_departure_intervals_train
+GROUP BY
+  stop_id
+ORDER BY
+  stop_id;
+
+-- Find stops with a peak service commencement before 7.30am
+CREATE OR REPLACE VIEW stop_first_service_before_0730_train AS
+SELECT
+  stop_id
+FROM
+  stop_first_peak_service_train
+WHERE
+  min <= '07:30:00';
+
+-- Find latest stop before 7.00pm
+CREATE OR REPLACE VIEW stop_last_peak_service_train AS
+SELECT 
+  stop_id,
+  MAX (departure_time)
+FROM 
+  stop_departure_intervals_train
+GROUP BY
+  stop_id
+ORDER BY
+  stop_id;
+
+-- Find stops with a peak service after 6.30pm
+CREATE OR REPLACE VIEW stop_last_service_after_1830_train AS
+SELECT
+  stop_id
+FROM
+  stop_last_peak_service_train
+WHERE
+  max >= '18:30:00';
+
+-- Find maximum interval between services for stops with a service before 7.30am and after 6.30pm 
+CREATE OR REPLACE VIEW stop_max_interval_train AS
+SELECT 
+  s.stop_id, 
+  MAX (s.next_departure_time - s.departure_time) AS max_interval
+FROM 
+  stop_departure_intervals_train AS s,
+  stop_first_service_before_0730_train AS f,
+  stop_last_service_after_1830_train AS l
+WHERE
+  s.next_departure_time IS NOT NULL AND
+  s.stop_id = f.stop_id AND
+  s.stop_id = l.stop_id
+GROUP BY
+  s.stop_id
+ORDER BY
+  s.stop_id;
+
+DROP TABLE IF EXISTS stop_30_mins_train;
+CREATE TABLE stop_30_mins_train AS
+SELECT 
+  s.agency_id,
+  s.stop_id,
+  s.stop_name,
+  s.stop_lat, 
+  s.stop_lon,
+  s.route_color,
+  s.geom,
+  (SELECT EXTRACT(epoch FROM i.max_interval)/60) AS max_interval
+FROM
+  stop_train AS s,
+  stop_max_interval_train AS i 
+WHERE 
+  s.stop_id = i.stop_id AND
+  i.max_interval <= '00:30:00';
+
+RETURN QUERY SELECT stop_id FROM stop_30_mins_train;
+  
+END;
+$$ LANGUAGE plpgsql;
+
+
+
+-- after the stored procedures have been defined, this generates the dates for each stop_id where that stop_id provides a 30 minute frequency service
+DROP TABLE IF EXISTS train_30_min_stops_by_date;
+CREATE TABLE train_30_min_stops_by_date AS
+SELECT DISTINCT
+  date_numeric,
+  train_30_min_stops(to_date(to_char(date_numeric, '99999999'), 'YYYYMMDD')) stop_id
+FROM
+  calendar_extent
+ORDER BY
+  date_numeric;
+  
+-- view the results
+SELECT
+  date_numeric,
+  count(stop_id)
+FROM
+  (SELECT DISTINCT * FROM train_30_min_stops_by_date) t
+GROUP BY
+  date_numeric
+ORDER BY
+  date_numeric;
+
+-- create the crosstab query
+DROP TABLE IF EXISTS train_stop_dow;
+CREATE TABLE train_stop_dow AS
+SELECT * FROM crosstab (
+  'SELECT DISTINCT
+    stop_id,
+    extract(dow from to_date(to_char(date_numeric, ''99999999''), ''YYYYMMDD''))::int AS dow,
+	count(date_numeric) dow_count
+  FROM
+    (SELECT DISTINCT * FROM train_30_min_stops_by_date) t
+  -- exclude school holiday periods and data issues whereby core rail services are not in the timetable from ?
+  WHERE
+    date_numeric BETWEEN 20181008 AND 20181205
+  GROUP BY
+    stop_id,
+    dow
+  ORDER BY
+    stop_id,
+    dow',
+  'SELECT * FROM generate_series(0, 6) ORDER BY 1'
+)
+  AS (
+    stop_id text,
+	sunday int,
+	monday int,
+	tuesday int,
+	wednesday int,
+	thursday int,
+	friday int,
+	saturday int
+)
+;
+
+-- this generates a table that summarises the maximum number of days a stop_id could be a 30 minute stop by dow
+DROP TABLE IF EXISTS calendar_train_maximum;
+CREATE TABLE calendar_train_maximum AS
+SELECT * FROM crosstab (
+  'SELECT DISTINCT
+    stop_id,
+    dow,
+    count(date_numeric) dow_count
+  FROM
+    stops,
+    calendar_extent
+  WHERE
+    date_numeric BETWEEN 20181008 AND 20181205
+  GROUP BY
+    stop_id,
+    dow
+  ORDER BY
+    stop_id ASC,
+    dow ASC',
+  'SELECT * FROM generate_series(0, 6) ORDER BY 1'
+)
+  AS (
+    stop_id text,
+	sunday int,
+	monday int,
+	tuesday int,
+	wednesday int,
+	thursday int,
+	friday int,
+	saturday int
+)
+;
+
+DROP TABLE IF EXISTS train_stop_pcent;
+CREATE TABLE train_stop_pcent AS
+SELECT
+  b.stop_id,
+  100*(coalesce(b.monday,0) + coalesce(b.tuesday,0) + coalesce(b.wednesday,0) + coalesce(b.thursday,0) + coalesce(b.friday,0))/(m.monday + m.tuesday + m.wednesday + m.thursday + m.friday)::decimal weekday_pcent
+FROM
+  train_stop_dow b INNER JOIN calendar_train_maximum m ON b.stop_id = m.stop_id;
+
+DROP TABLE IF EXISTS stop_30_mins_train_final;
+CREATE TABLE stop_30_mins_train_final AS
+SELECT DISTINCT
+  s.agency_id,
+  s.stop_id,
+  s.stop_name,
+  s.stop_lat, 
+  s.stop_lon,
+  s.route_color,
+  s.geom
+FROM
+  stop_train s,
+  train_stop_pcent p
+WHERE 
+  s.stop_id = p.stop_id AND
+  p.weekday_pcent > 90;
+
+---------------------------
+-- BUS interval analysis --
+---------------------------
+
+-- after the stored procedures have been defined, this generates the dates for each stop_id where that stop_id provides a 30 minute frequency service
+DROP TABLE IF EXISTS bus_30_min_stops_by_date;
+CREATE TABLE bus_30_min_stops_by_date AS
+SELECT DISTINCT
+  date_numeric,
+  bus_30_min_stops(to_date(to_char(date_numeric, '99999999'), 'YYYYMMDD')) stop_id
+FROM
+  calendar_extent
+ORDER BY
+  date_numeric;
+  
+-- view the results
+SELECT
+  date_numeric,
+  count(stop_id)
+FROM
+  (SELECT DISTINCT * FROM bus_30_min_stops_by_date) t
+GROUP BY
+  date_numeric
+ORDER BY
+  date_numeric;
+
+-- create the crosstab query
+DROP TABLE IF EXISTS bus_stop_dow;
+CREATE TABLE bus_stop_dow AS
+SELECT * FROM crosstab (
+  'SELECT DISTINCT
+    stop_id,
+    extract(dow from to_date(to_char(date_numeric, ''99999999''), ''YYYYMMDD''))::int AS dow,
+	count(date_numeric) dow_count
+  FROM
+    (SELECT DISTINCT * FROM bus_30_min_stops_by_date) t
+	-- exclude school holiday periods
+  WHERE
+    date_numeric BETWEEN 20181008 AND 20181205
+  GROUP BY
+    stop_id,
+    dow
+  ORDER BY
+    stop_id,
+    dow',
+  'SELECT * FROM generate_series(0, 6) ORDER BY 1'
+)
+  AS (
+    stop_id text,
+	sunday int,
+	monday int,
+	tuesday int,
+	wednesday int,
+	thursday int,
+	friday int,
+	saturday int
+)
+;
+
+-- this generates a table that summarises the maximum number of days a stop_id could be a 30 minute stop by dow
+DROP TABLE IF EXISTS calendar_bus_maximum;
+CREATE TABLE calendar_bus_maximum AS
+SELECT * FROM crosstab (
+  'SELECT DISTINCT
+    stop_id,
+    dow,
+    count(date_numeric) dow_count
+  FROM
+    stops,
+    calendar_extent
+  WHERE
+    date_numeric BETWEEN 20181008 AND 20181205
+  GROUP BY
+    stop_id,
+    dow
+  ORDER BY
+    stop_id ASC,
+    dow ASC',
+  'SELECT * FROM generate_series(0, 6) ORDER BY 1'
+)
+  AS (
+    stop_id text,
+	sunday int,
+	monday int,
+	tuesday int,
+	wednesday int,
+	thursday int,
+	friday int,
+	saturday int
+)
+;
+
+DROP TABLE IF EXISTS bus_stop_pcent;
+CREATE TABLE bus_stop_pcent AS
+SELECT
+  b.stop_id,
+  100*(coalesce(b.monday,0) + coalesce(b.tuesday,0) + coalesce(b.wednesday,0) + coalesce(b.thursday,0) + coalesce(b.friday,0))/(m.monday + m.tuesday + m.wednesday + m.thursday + m.friday)::decimal weekday_pcent
+FROM
+  bus_stop_dow b INNER JOIN calendar_bus_maximum m ON b.stop_id = m.stop_id;
+
+DROP TABLE IF EXISTS stop_30_mins_bus_final;
+CREATE TABLE stop_30_mins_bus_final AS
+SELECT DISTINCT
+  s.agency_id,
+  s.stop_id,
+  s.stop_name,
+  s.stop_lat, 
+  s.stop_lon,
+  s.route_color,
+  s.geom
+FROM
+  stop_bus s,
+  bus_stop_pcent p
+WHERE 
+  s.stop_id = p.stop_id AND
+  p.weekday_pcent > 90;
+  
+---------------------------
+-- TRAM interval analysis --
+---------------------------
+
+-- after the stored procedures have been defined, this generates the dates for each stop_id where that stop_id provides a 30 minute frequency service
+DROP TABLE IF EXISTS tram_30_min_stops_by_date;
+CREATE TABLE tram_30_min_stops_by_date AS
+SELECT DISTINCT
+  date_numeric,
+  tram_30_min_stops(to_date(to_char(date_numeric, '99999999'), 'YYYYMMDD')) stop_id
+FROM
+  calendar_extent
+ORDER BY
+  date_numeric;
+  
+-- view the results
+SELECT
+  date_numeric,
+  count(stop_id)
+FROM
+  (SELECT DISTINCT * FROM tram_30_min_stops_by_date) t
+GROUP BY
+  date_numeric
+ORDER BY
+  date_numeric;
+
+-- create the crosstab query
+DROP TABLE IF EXISTS tram_stop_dow;
+CREATE TABLE tram_stop_dow AS
+SELECT * FROM crosstab (
+  'SELECT DISTINCT
+    stop_id,
+    extract(dow from to_date(to_char(date_numeric, ''99999999''), ''YYYYMMDD''))::int AS dow,
+	count(date_numeric) dow_count
+  FROM
+    (SELECT DISTINCT * FROM tram_30_min_stops_by_date) t
+	-- exclude school holiday periods
+  WHERE
+    date_numeric BETWEEN 20181008 AND 20181205
+  GROUP BY
+    stop_id,
+    dow
+  ORDER BY
+    stop_id,
+    dow',
+  'SELECT * FROM generate_series(0, 6) ORDER BY 1'
+)
+  AS (
+    stop_id text,
+	sunday int,
+	monday int,
+	tuesday int,
+	wednesday int,
+	thursday int,
+	friday int,
+	saturday int
+)
+;
+
+-- this generates a table that summarises the maximum number of days a stop_id could be a 30 minute stop by dow
+DROP TABLE IF EXISTS calendar_tram_maximum;
+CREATE TABLE calendar_tram_maximum AS
+SELECT * FROM crosstab (
+  'SELECT DISTINCT
+    stop_id,
+    dow,
+    count(date_numeric) dow_count
+  FROM
+    stops,
+    calendar_extent
+  WHERE
+    date_numeric BETWEEN 20181008 AND 20181205
+  GROUP BY
+    stop_id,
+    dow
+  ORDER BY
+    stop_id ASC,
+    dow ASC',
+  'SELECT * FROM generate_series(0, 6) ORDER BY 1'
+)
+  AS (
+    stop_id text,
+	sunday int,
+	monday int,
+	tuesday int,
+	wednesday int,
+	thursday int,
+	friday int,
+	saturday int
+)
+;
+
+DROP TABLE IF EXISTS tram_stop_pcent;
+CREATE TABLE tram_stop_pcent AS
+SELECT
+  b.stop_id,
+  100*(coalesce(b.monday,0) + coalesce(b.tuesday,0) + coalesce(b.wednesday,0) + coalesce(b.thursday,0) + coalesce(b.friday,0))/(m.monday + m.tuesday + m.wednesday + m.thursday + m.friday)::decimal weekday_pcent
+FROM
+  tram_stop_dow b INNER JOIN calendar_tram_maximum m ON b.stop_id = m.stop_id;
+
+DROP TABLE IF EXISTS stop_30_mins_tram_final;
+CREATE TABLE stop_30_mins_tram_final AS
+SELECT DISTINCT
+  s.agency_id,
+  s.stop_id,
+  s.stop_name,
+  s.stop_lat, 
+  s.stop_lon,
+  s.route_color,
+  s.geom
+FROM
+  stop_tram s,
+  tram_stop_pcent p
+WHERE 
+  s.stop_id = p.stop_id AND
+  p.weekday_pcent > 90;
+   
+------------------------------
+-- Combine 30 minutes stops -- 
+------------------------------
+DROP TABLE IF EXISTS stop_30_mins_final;
+CREATE TABLE stop_30_mins_final AS
+SELECT
+  *
+FROM (
+  SELECT * FROM stop_30_mins_train_final
+  UNION ALL
+  SELECT * FROM stop_30_mins_bus_final
+  UNION ALL
+  SELECT * FROM stop_30_mins_tram_final
+) s
+;
+'''
