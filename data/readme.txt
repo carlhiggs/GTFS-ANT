@@ -1,0 +1,1 @@
+Please create folders in this directory containing zipped gtfs feed data.
