@@ -168,10 +168,12 @@ for root, dirs, files in os.walk(args.dir):
               curs.execute(create_gtfs_analysis_functions)
               conn.commit()
               print("Done.")
-              print("\t- Performing GTFS analysis... "),
-              curs.execute(gtfs_analysis)
-              conn.commit()
-              print("Done.")
+              print("\t- Performing GTFS analysis"),
+              for query in gtfs_analysis.split(';'):
+                if len(query.replace(' ','')) > 2 :
+                    curs.execute(query)
+                    conn.commit()
+                    print("."),
               conn.close()
               continue
             else:
@@ -246,10 +248,13 @@ for root, dirs, files in os.walk(args.dir):
               curs.execute(create_gtfs_analysis_functions)
               conn.commit()
               print("Done.")
-              print("\t- Performing GTFS analysis... "),
-              curs.execute(gtfs_analysis)
-              conn.commit()
-              print("Done.")
+              print("\t- Performing GTFS analysis"),
+              for query in gtfs_analysis.split(';'):
+                if len(query.replace(' ','')) > 2 :
+                    curs.execute(query)
+                    conn.commit()
+                    print("."),
+              print(" Done.")
               conn.close()
 
 create_combined_analysis_results = '''
