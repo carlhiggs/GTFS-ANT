@@ -40,9 +40,13 @@ parser.add_argument('-w',
                     help='SQL password',
                     type=str)
 parser.add_argument('-dir',
-                    help='parent directory',
+                    help='Folder containing zipped GTFS data',
                     default=cwd,
                     type=valid_path)
+parser.add_argument('-reprocess',
+                    help='Re-analyse GTFS feed if database already exists (default is False)',
+                    default=False,
+                    type=boolean)
 args = parser.parse_args()
 
 sys.path.append(args.dir)
@@ -50,6 +54,22 @@ from _setup_modes import *
 
 print(description)
 print('''
+GTFS ANalysis Tool (gtfs_ant)
+Carl Higgs 2019
+
+This tool generalises General Transit Feed Specification (GTFS) analysis developed by the Healthy Liveable Cities group in work lead by Jonathan Arundel in 2017 through 2019 for Australian state transit agency GTFS feeds.
+
+usage: gtfs_to_psql.py [-h] [-db DB] [-U U] [-w W] [-dir DIR]
+
+Import GTFS feeds from zip files, creating databases as per filename, set up functions for analysis, and analyse for frequent transport
+
+optional arguments:
+  -h, --help  show this help message and exit
+  -db DB      Admin database
+  -U U        SQL user
+  -w W        SQL password
+  -dir DIR    Folder containing zipped GTFS data
+
 It is recommended that you ensure your GTFS file names are
   - lower case
   - no spaces
@@ -58,6 +78,29 @@ It is recommended that you ensure your GTFS file names are
 
 For example: "gtfs_vic_ptv_20180413" follows a schema, 'gtfs_state_agency_yyyymmdd' 
 This will allow for easy storage and retrieval of multiple gtfs feed databases.
+
+In order to set up analysis functions and run analyses, parameters for your GTFS feeds must be stored in the specified folder in a file called '_setup_modes.py'.  If this file is opened in a text editor it appears like the below:
+
+________________________________________________________________________________________________________________________________________
+
+# define modes for GTFS feed(s) as per agency_id codes in agency.txt below
+modes = {
+         'tram' :{'route_types':[0], 'agency_ids':[3]  , 'start_times':['07:00:00'],'end_times':['19:00:00'],'intervals':['00:30:00']},
+         'train':{'route_types':[1], 'agency_ids':[1,2], 'start_times':['07:00:00'],'end_times':['19:00:00'],'intervals':['00:30:00']},
+         'bus'  :{'route_types':[3], 'agency_ids':[4,6], 'start_times':['07:00:00'],'end_times':['19:00:00'],'intervals':['00:30:00']}
+         }
+________________________________________________________________________________________________________________________________________
+
+The above parameters are all comma seperated lists, allowing for flexible definitions:
+
+Define 'route_types' as per https://developers.google.com/transit/gtfs/reference/#routestxt
+
+Define agency_ids as per the coding used by your transit agency in agency.txt
+
+Define start and end times as per your times of interest (e.g. 7 am to 7 pm as per example above)
+
+Define intervals as per example (for 30 minute interval); for example to also analyse at 15 minute intervals, change this to ['00:15:00','00:30:00']
+
 ''')
 required_files = ['agency.txt', 'calendar.txt', 'calendar_dates.txt', 'routes.txt', 'shapes.txt', 'stop_times.txt', 'stops.txt', 'trips.txt'] 
 
@@ -157,24 +200,25 @@ for root, dirs, files in os.walk(args.dir):
             print("\t- Check if sql database exists... "),
             sql =  '''SELECT 1 FROM pg_catalog.pg_database WHERE datname='{}';'''.format(name)
             curs.execute(sql)
+            conn.close()
             if len(curs.fetchall())!=0:
               print("Database already exists; skipping (assumed processed).")
-              print("\t- Creating frequent transport analysis functions... "),
-              conn.close()
-              # connect to new database
-              conn = psycopg2.connect(dbname=name, user=args.U, password=args.w)
-              curs = conn.cursor()
-              # print(create_gtfs_analysis_functions)
-              curs.execute(create_gtfs_analysis_functions)
-              conn.commit()
-              print("Done.")
-              print("\t- Performing GTFS analysis"),
-              for query in gtfs_analysis.split(';'):
-                if len(query.replace(' ','')) > 2 :
-                    curs.execute(query)
-                    conn.commit()
-                    print("."),
-              conn.close()
+              if args.reprocess:
+                  print("\t- Creating frequent transport analysis functions... "),
+                  # connect to new database
+                  conn = psycopg2.connect(dbname=name, user=args.U, password=args.w)
+                  curs = conn.cursor()
+                  # print(create_gtfs_analysis_functions)
+                  curs.execute(create_gtfs_analysis_functions)
+                  conn.commit()
+                  print("Done.")
+                  print("\t- Performing GTFS analysis"),
+                  for query in gtfs_analysis.split(';'):
+                    if len(query.replace(' ','')) > 2 :
+                        curs.execute(query)
+                        conn.commit()
+                        print("."),
+                  conn.close()
               continue
             else:
               # SQL queries
