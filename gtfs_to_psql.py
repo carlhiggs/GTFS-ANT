@@ -25,9 +25,9 @@ def valid_path(arg):
     else:
         return arg
   
-task = 'Import GTFS feeds from zip files, creating databases as per filename'
+description = 'Import GTFS feeds from zip files, creating databases as per filename'
 # Parse input arguments
-parser = argparse.ArgumentParser(description=task)
+parser = argparse.ArgumentParser(description=description)
 parser.add_argument('-db',
                     help='Admin database',
                     default='postgres',
@@ -48,7 +48,7 @@ args = parser.parse_args()
 sys.path.append(args.dir)
 from _setup_modes import *
 
-print(task)
+print(description)
 print('''
 It is recommended that you ensure your GTFS file names are
   - lower case
@@ -64,864 +64,196 @@ required_files = ['agency.txt', 'calendar.txt', 'calendar_dates.txt', 'routes.tx
 with open('_setup_gtfs_tables.sql', 'r') as myfile:
   required_tables_sql = myfile.read()
 
-with open('_parameterised_mode_freq_query.txt', 'r') as myfile:
-  freq_analysis = myfile.read()
+with open('_parameterised_mode_freq_query.py.sql', 'r') as myfile:
+  freq_analysis_function = myfile.read()
 
+with open('_analyse_frequent_stops.py.sql', 'r') as myfile:
+  freq_analysis = myfile.read()
+  
 # define variables based on above parameters, including permutations of start, end and time buffers (e.g. 
 
 time_format  ='%H:%M:%S'
 short_time   = '%H%M'
 
-create_30_mins_stops_function = list()
-for mode in modes:
-    create_30_mins_stops_function[mode] = list()
-    durations = list(itertools.product(modes[mode]['start_times'], modes[mode]['end_times']))
-    for duration in durations:
-        start_time = duration[0]
-        end_time   = duration[1]
-        for interval in intervals:
-            interval  = datetime.datetime.strptime(interval,time_format)
-            interval  = datetime.timedelta(hours=interval.hour, minutes=interval.minute, seconds=interval.second)
-            buffer_start = (datetime.datetime.strptime(start_time,time_format) + interval)
-            buffer_end   = (datetime.datetime.strptime(end_time,  time_format) - interval)
-            # use the above as buffer_start.strftime(time_format) or buffer_start.strftime(short_time) , for example
-            analysis = '{}_to_{}_at_{}freq'.format(buffer_start.strftime(short_time) ,
-                                                   buffer_end.strftime(short_time)   ,
-                                                   interval.strftime(short_time))
-            create_30_mins_stops_function[mode][analysis] = freq_analysis.format(
-               mode               = mode                              ,
-               start_time         = start_time                        ,
-               end_time           = end_time                          ,
-               buffer_start       = buffer_start.strftime(time_format),
-               buffer_end         = buffer_end.strftime(time_format)  ,
-               buffer_start_short = buffer_start.strftime(short_time) ,
-               buffer_end_short   = buffer_end.strftime(short_time)   ,
-               interval_short     = interval.strftime(short_time)     ,
-               route_type         = ",".join(route_type_list)         ,
-               agency_id_list     = "','".join(agency_id_list)
-           )
-print(create_30_mins_stops_function)
 
 
+                
+print("Import GTFS feeds... ")
+for root, dirs, files in os.walk(args.dir):
+  for file in files:
+    if file.endswith(".zip"):
+      path = '{}/{}'.format(root,file)
+      print('\n  - {}'.format(path))
+      name = os.path.splitext(file)[0]    
+      print("\t - Define analysis functions... ")
+      # deriving year, based on assumption suffix is _yyyymmdd
+      year = name.split('_')[-1][0:4]
+      analysis_start_date = '{}{}'.format(year,start_date_mmdd)
+      analysis_end_date   = '{}{}'.format(year,end_date_mmdd)
+      create_gtfs_analysis_functions = ''
+      gtfs_analysis = ''
+      print("\t\t- Analysis period: {} to {}".format(analysis_start_date,analysis_end_date))
+      for mode in modes:
+          print("\t\t- {}".format(mode))
+          durations = list(itertools.product(modes[mode]['start_times'], modes[mode]['end_times']))
+          for duration in durations:
+              start_time = duration[0]
+              end_time   = duration[1]
+              for interval in modes[mode]['intervals']:
+                  interval  = datetime.datetime.strptime(interval,time_format)
+                  interval_time  = datetime.timedelta(hours=interval.hour, minutes=interval.minute, seconds=interval.second)
+                  buffer_start = (datetime.datetime.strptime(start_time,time_format) + interval_time)
+                  buffer_end   = (datetime.datetime.strptime(end_time,  time_format) - interval_time)
+                  # use the above as buffer_start.strftime(time_format) or buffer_start.strftime(short_time) , for example
+                  print("\t\t  - Analysis time: {} to {}".format(buffer_start.strftime(short_time) ,
+                                                                                   buffer_end.strftime(short_time)))
+                  print("\t\t  - Analysis inverval: {} (HHMM) freq".format(interval.strftime(short_time)))
+                  create_gtfs_analysis_functions = '{}\n{}'.format(create_gtfs_analysis_functions,
+                                                                  freq_analysis_function.format(
+                     mode               = mode                                     ,
+                     start_time         = start_time                               ,
+                     end_time           = end_time                                 ,
+                     buffer_start       = buffer_start.strftime(time_format)       ,
+                     buffer_end         = buffer_end.strftime(time_format)         ,
+                     buffer_start_short = buffer_start.strftime(short_time)        ,
+                     buffer_end_short   = buffer_end.strftime(short_time)          ,
+                     interval           = interval.strftime(time_format)            ,
+                     interval_short     = interval.strftime(short_time)            ,
+                     route_types        = ",".join(['{}'.format(x) for x in modes[mode]['route_types']]),
+                     agency_ids         = "','".join(['{}'.format(x) for x in modes[mode]['agency_ids']])
+                  ))
+                  gtfs_analysis = '{}\n{}'.format(gtfs_analysis,
+                                                  freq_analysis.format(
+                     mode               = mode                                     ,
+                     start_date         = analysis_start_date                      ,
+                     end_date           = analysis_end_date                        ,
+                     start_time         = start_time                               ,
+                     end_time           = end_time                                 ,
+                     buffer_start       = buffer_start.strftime(time_format)       ,
+                     buffer_end         = buffer_end.strftime(time_format)         ,
+                     buffer_start_short = buffer_start.strftime(short_time)        ,
+                     buffer_end_short   = buffer_end.strftime(short_time)          ,
+                     interval           = interval.strftime(time_format)            ,
+                     interval_short     = interval.strftime(short_time)            ,
+                     route_types        = ",".join(['{}'.format(x) for x in modes[mode]['route_types']]),
+                     agency_ids         = "','".join(['{}'.format(x) for x in modes[mode]['agency_ids']])
+                  ))
+                  print("\t\t  - SQL function: {mode}_{interval_short}_stops(date)".format( mode = mode,
+                      interval_short = interval.strftime(short_time)))
+      with ZipFile(path) as myzip:
+        file_list = ZipFile.namelist(myzip)
+        # print("Zip contents: {}".format(file_list))
+        print("\t- Checking required files are present... "),
+        test_contents = [x for x in required_files if x not in file_list]
+        if (len(test_contents)!=0):
+          print("No.  The zip file appears to be missing the following required files: {}".format(test_contents))
+          continue
+        else:
+            print("Done.")
+            conn = psycopg2.connect(dbname=args.db, user=args.U, password=args.w)
+            conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT) # <-- ADD THIS LINE
+            curs = conn.cursor()
 
-
-
-# for root, dirs, files in os.walk(args.dir):
-  # for file in files:
-    # if file.endswith(".zip"):
-      # path = '{}/{}'.format(root,file)
-      # print('\n{}'.format(path))
-      # name = os.path.splitext(file)[0]            
-      # with ZipFile(path) as myzip:
-        # file_list = ZipFile.namelist(myzip)
-        # # print("Zip contents: {}".format(file_list))
-        # test_contents = [x for x in required_files if x not in file_list]
-        # if (len(test_contents)!=0):
-          # print("The zip file appears to be missing the following required files: {}".format(test_contents))
-          # continue
-        # else:
-            # print("\t- Required files are present.")
-            # conn = psycopg2.connect(dbname=args.db, user=args.U, password=args.w)
-            # conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT) # <-- ADD THIS LINE
-            # curs = conn.cursor()
-
-            # # check if sql database exists
-            # sql =  '''SELECT 1 FROM pg_catalog.pg_database WHERE datname='{}';'''.format(name)
-            # curs.execute(sql)
-            # if len(curs.fetchall())!=0:
-              # print("\t- Database already exists!")
-              # conn.close()
-              # continue
-            # else:
-              # # SQL queries
-              # sql =  '''
-                # CREATE DATABASE {};
-               # '''.format(name.lower())  
-              # curs.execute(sql)
+            print("\t- Check if sql database exists... "),
+            sql =  '''SELECT 1 FROM pg_catalog.pg_database WHERE datname='{}';'''.format(name)
+            curs.execute(sql)
+            if len(curs.fetchall())!=0:
+              print("Database already exists; skipping (assumed processed).")
+              print("\t- Creating frequent transport analysis functions... "),
+              # curs.execute(create_gtfs_analysis_functions)
+              print(create_gtfs_analysis_functions)
               # conn.commit()
-              # print("\t- Created database: {}".format(name.lower()))
-              # conn.close()
-              # # connect to new database
-              # conn = psycopg2.connect(dbname=name, user=args.U, password=args.w)
-              # curs = conn.cursor()
-              # print("\t- Connected to {}".format(name.lower()))
-              # curs.execute(required_tables_sql)
+              print("Done.")
+              # print("\t- Performing GTFS analysis... "),
+              # curs.execute(gtfs_analysis)
               # conn.commit()
-              # print("\t- Created required tables.")
-              # for table in ['agency','calendar','calendar_dates','routes','shapes','stop_times','stops','trips']:
-                # with myzip.open('{}.txt'.format(table)) as myfile:
-                  # try:
-                    # sql = '''COPY {table} FROM STDIN WITH CSV HEADER;'''.format(table = table)
-                    # curs.copy_expert(sql, myfile)
-                  # except:
-                    # print("\t\t- Issue found with {}... ".format(table))
-                    # if table=='routes':
-                      # conn = psycopg2.connect(dbname=name, user=args.U, password=args.w)
-                      # curs = conn.cursor()
-                      # # known likely issue with legacy feeds, not having route colour variable
-                      # # so we try again and specify specific fields in hope it works
-                      # sql = '''
-                      # COPY {table} 
-                           # (route_id,agency_id,route_short_name,route_long_name,route_type) 
-                      # FROM STDIN WITH CSV HEADER;
-                      # '''.format(table = table)
-                      # curs.copy_expert(sql, myfile)
-                    # else:
-                        # print("  failed.")
-                        # conn.close()
-                        # raise
-              # print("\t- Updated required tables with data.")
-              # sql = '''
-                # ALTER TABLE stop_times 
-                    # ALTER COLUMN shape_dist_traveled TYPE double precision USING NULLIF(shape_dist_traveled, '')::double precision'''
-              # curs.execute(sql)
-              # conn.commit()
-              # sql = '''
-              # CREATE EXTENSION postgis;
-              # CREATE EXTENSION tablefunc;
-              # '''
-              # curs.execute(sql)
-              # conn.commit()
-              # print("\t- Created postgis extension.")
-              # conn.close()
+              print("Done.")
+              conn.close()
+              continue
+            else:
+              # SQL queries
+              sql =  '''
+                CREATE DATABASE {};
+               '''.format(name.lower())  
+              print("Created database: {}".format(name.lower()))
+              curs.execute(sql)
+              conn.commit()
+              conn.close()
+              # connect to new database
+              conn = psycopg2.connect(dbname=name, user=args.U, password=args.w)
+              curs = conn.cursor()
+              print("\t- Connected to {}".format(name.lower()))
+              print("\t- Creating required tables... "),
+              curs.execute(required_tables_sql)
+              conn.commit()
+              print("Done.")
+              print("\t- Updating tables with data... ")
+              conn.close()
+              for table in ['agency','calendar','calendar_dates','routes','shapes','stop_times','stops','trips']:
+                print("\t\t{}... ".format(table)),
+                with myzip.open('{}.txt'.format(table)) as myfile:
+                  try:
+                    conn = psycopg2.connect(dbname=name, user=args.U, password=args.w)
+                    curs = conn.cursor()
+                    sql = '''COPY {table} FROM STDIN WITH CSV HEADER;'''.format(table = table)
+                    curs.copy_expert(sql, myfile)
+                    conn.commit()
+                    curs.close()
+                    conn.close()
+                  except:
+                    print("\n\t\t- Issue found... ".format(table))
+                    if table=='routes':
+                      conn = psycopg2.connect(dbname=name, user=args.U, password=args.w)
+                      curs = conn.cursor()
+                      # known likely issue with legacy feeds, not having route colour variable
+                      # so we try again and specify specific fields in hope it works
+                      sql = '''
+                      COPY {table} 
+                           (route_id,agency_id,route_short_name,route_long_name,route_type) 
+                      FROM STDIN WITH CSV HEADER;
+                      '''.format(table = table)
+                      print("\t\t- Re-attempting to import data for routes table with query {}... ".format(sql)),
+                      with myzip.open('{}.txt'.format(table)) as myfile:
+                        curs.copy_expert(sql, myfile)
+                        conn.commit()
+                        curs.close()
+                        conn.close()
+                    else:
+                        print("  failed.")
+                        conn.close()
+                        raise
+                print("Done.")
+              conn = psycopg2.connect(dbname=name, user=args.U, password=args.w)
+              curs = conn.cursor()
+              print("\t- Amending datatype of 'shape_dist_traveled' variable in stop_times...")
+              sql = '''
+                ALTER TABLE stop_times 
+                    ALTER COLUMN shape_dist_traveled TYPE double precision USING NULLIF(shape_dist_traveled, '')::double precision'''
+              curs.execute(sql)
+              conn.commit()
+              print("\t- Creating required / recommended extensions... ")
+              sql = '''
+              CREATE EXTENSION postgis;
+              CREATE EXTENSION tablefunc;
+              '''
+              curs.execute(sql)
+              conn.commit()
+              print("\t- Creating frequent transport analysis functions... "),
+              curs.execute(create_gtfs_analysis_functions)
+              conn.commit()
+              print("Done.")
+              print("\t- Performing GTFS analysis... "),
+              curs.execute(gtfs_analysis)
+              conn.commit()
+              print("Done.")
+              conn.close()
 
-amended_sql_from_ga_editing = '''
---------------------
--- Calendar setup -- 
---------------------
-
--- needed for crosstab calculations later
-CREATE EXTENSION tablefunc;
-
--- this generates the series of dates (and dow) for all dates covered by the calendar
-DROP TABLE IF EXISTS calendar_extent;
-CREATE TABLE calendar_extent AS
-SELECT
-  to_number(to_char(date, 'YYYYMMDD'), '99999999') AS date_numeric,
-  extract(dow from date)::int AS dow
-FROM
-  generate_series (
-    (SELECT to_date(to_char(MIN(start_date), '99999999'), 'YYYYMMDD') FROM calendar),
-    (SELECT to_date(to_char(MAX(end_date), '99999999'), 'YYYYMMDD') FROM calendar),
-	interval '1 day'
-  ) date;
-
--- this generates a table that summarises the maximum number of days a stop_id could be a 30 minute stop by dow
-DROP TABLE IF EXISTS calendar_maximum;
-CREATE TABLE calendar_maximum AS
-SELECT * FROM crosstab (
-  'SELECT DISTINCT
-    stop_id,
-    dow,
-    count(date_numeric) dow_count
-  FROM
-    stops,
-    calendar_extent
-  GROUP BY
-    stop_id,
-    dow
-  ORDER BY
-    stop_id ASC,
-    dow ASC',
-  'SELECT * FROM generate_series(0, 6) ORDER BY 1'
-)
-  AS (
-    stop_id text,
-	sunday int,
-	monday int,
-	tuesday int,
-	wednesday int,
-	thursday int,
-	friday int,
-	saturday int
-)
-;
-
--- this function generates a series of dates between two days  
-CREATE OR REPLACE FUNCTION dayseries (date, date)
-  RETURNS SETOF timestamp with time zone AS
-$$
-  SELECT * FROM generate_series($1, $2, interval '1d') d
-$$ LANGUAGE SQL IMMUTABLE;
-
--- this generates a service_id and a series of dates corresponding to the calendar
-DROP TABLE IF EXISTS calendar_series;
-CREATE TABLE calendar_series AS
-SELECT
-  service_id,
-  to_number(to_char(dayseries(to_date(to_char(start_date, '99999999'), 'YYYYMMDD'), to_date(to_char(end_date, '99999999'), 'YYYYMMDD'))::date, 'YYYYMMDD'), '99999999') AS date
-FROM
-  calendar
-ORDER BY
-  service_id,
-  date;
-
-  
-ALTER TABLE calendar_series ADD COLUMN dow integer;
-UPDATE calendar_series SET dow = extract(dow from to_date(to_char(date, '99999999'), 'YYYYMMDD'))::int;
-
--- this deletes from the series dates on which the named day is "false"
-DELETE FROM calendar_series
-WHERE (service_id, dow) IN (
-  SELECT
-    service_id,
-    dow
-  FROM (
-    SELECT
-      service_id,
-      unnest(
-        array[1, 2, 3, 4, 5, 6, 0]
-      ) AS dow,
-      unnest(
-        array[monday, tuesday, wednesday, thursday, friday, saturday, sunday]
-      ) AS operates
-    FROM calendar) s
-  WHERE
-    operates = 'F');
-  
--- this deletes services as required based on the calendar_dates table
-DELETE FROM calendar_series
-WHERE (service_id, date) IN (SELECT service_id, date FROM calendar_dates WHERE exception_type = '2');
-
--- this adds services as required based on the calendar_dates table
-INSERT INTO calendar_series SELECT service_id, date, extract(dow from to_date(to_char(date, '99999999'), 'YYYYMMDD'))::int FROM calendar_dates WHERE exception_type = '1';
-
---------------------------------------------------
--- Create train, tram and bus (and coach) stops --
---------------------------------------------------
-
-SELECT
-  agency_id,
-  route_type
-FROM
-  routes
-GROUP BY
-  agency_id,
-  route_type
-ORDER BY
-  route_type;
-
--- JA code assumes stops has geom; let's create
-ALTER TABLE stops add column geom geometry(Point, 4326);
-UPDATE stops set geom=st_SetSrid(st_MakePoint(stop_lon, stop_lat), 4326);
-
-DROP TABLE IF EXISTS stop_train;
-CREATE TABLE stop_train AS
-SELECT
-  routes.agency_id,
-  stops.stop_id,
-  stops.stop_name,
-  stops.stop_lat,
-  stops.stop_lon,
-  stops.geom
-FROM
-  public.stops,
-  public.stop_times,
-  public.trips,
-  public.routes
-WHERE 
-  stops.stop_id = stop_times.stop_id AND
-  stop_times.trip_id = trips.trip_id AND
-  trips.route_id = routes.route_id AND
-  -- allow for consideration of both metropolitan and regional trains
-  routes.route_type IN ('1','2') AND
-  routes.agency_id IN('1','2')
-GROUP BY
-  routes.agency_id,
-  stops.stop_id,
-  stops.stop_name,
-  stops.stop_lat,
-  stops.stop_lon,
-  stops.geom
-ORDER BY
-  stops.stop_id;
-
-DROP TABLE IF EXISTS stop_tram;
-CREATE TABLE stop_tram AS
-SELECT
-  routes.agency_id,
-  stops.stop_id,
-  stops.stop_name,
-  stops.stop_lat,
-  stops.stop_lon,
-  stops.geom
-FROM
-  public.stops,
-  public.stop_times,
-  public.trips,
-  public.routes
-WHERE 
-  stops.stop_id = stop_times.stop_id AND
-  stop_times.trip_id = trips.trip_id AND
-  trips.route_id = routes.route_id AND
-  routes.route_type = 0 AND
-  routes.agency_id = '3'
-GROUP BY
-  routes.agency_id,
-  stops.stop_id,
-  stops.stop_name,
-  stops.stop_lat,
-  stops.stop_lon,
-  routes.route_color,
-  stops.geom
-ORDER BY
-  stops.stop_id;
-  
-DROP TABLE IF EXISTS stop_bus;
-CREATE TABLE stop_bus AS
-SELECT
-  routes.agency_id,
-  stops.stop_id,
-  stops.stop_name,
-  stops.stop_lat,
-  stops.stop_lon,
-  routes.route_color,
-  stops.geom
-FROM
-  public.stops,
-  public.stop_times,
-  public.trips,
-  public.routes
-WHERE 
-  stops.stop_id = stop_times.stop_id AND
-  stop_times.trip_id = trips.trip_id AND
-  trips.route_id = routes.route_id AND
-  routes.route_type = 3 AND
-  -- allow for consideration of both metropolitan and regional buses
-  routes.agency_id IN ('4','6')
-GROUP BY
-  routes.agency_id,
-  stops.stop_id,
-  stops.stop_name,
-  stops.stop_lat,
-  stops.stop_lon,
-  routes.route_color,
-  stops.geom
-ORDER BY
-  stops.stop_id;
-  
-DROP TABLE IF EXISTS stop_coach;
-CREATE TABLE stop_coach AS
-SELECT
-  routes.agency_id,
-  stops.stop_id,
-  stops.stop_name,
-  stops.stop_lat,
-  stops.stop_lon,
-  routes.route_color,
-  stops.geom
-FROM
-  public.stops,
-  public.stop_times,
-  public.trips,
-  public.routes
-WHERE 
-  stops.stop_id = stop_times.stop_id AND
-  stop_times.trip_id = trips.trip_id AND
-  trips.route_id = routes.route_id AND
-  routes.route_type = 3 AND
-  routes.agency_id IN ('5')
-GROUP BY
-  routes.agency_id,
-  stops.stop_id,
-  stops.stop_name,
-  stops.stop_lat,
-  stops.stop_lon,
-  routes.route_color,
-  stops.geom
-ORDER BY
-  stops.stop_id;
-
------------------------------
--- TRAIN interval analysis --
------------------------------
-
-CREATE OR REPLACE FUNCTION train_30_min_stops(date) RETURNS SETOF text AS $$
-DECLARE
-  service_date ALIAS FOR $1;
-BEGIN
-
-DROP TABLE IF EXISTS stop_departure_train CASCADE;
-CREATE TABLE stop_departure_train AS
-SELECT DISTINCT
-  routes.route_id,
-  agency_id,
-  route_type,
-  route_color,
-  trips.trip_id,
-  stops.stop_id,
-  stop_sequence,
-  departure_time
-FROM  
-  routes,
-  trips,
-  stop_times,
-  stops,
-  calendar_series
-WHERE
-  routes.route_id = trips.route_id AND
-  trips.service_id = calendar_series.service_id AND
-  stop_times.trip_id = trips.trip_id AND
-  stop_times.stop_id = stops.stop_id AND
-  -- daytime train services
-  stop_times.departure_time BETWEEN '07:00:00' AND '19:00:00' AND
-  routes.route_type = 2  AND
-  routes.agency_id IN('1','2')
-  -- offered on service_date
-  calendar_series.date = to_number(to_char(service_date, 'YYYYMMDD'), '99999999')
-ORDER BY
-  trip_id,
-  stop_sequence;
-
-DROP MATERIALIZED VIEW IF EXISTS stop_departure_intervals_train CASCADE;
-CREATE MATERIALIZED VIEW stop_departure_intervals_train AS
-SELECT
-  stop_id,
-  departure_time,
-  lag(departure_time) OVER (PARTITION BY stop_id ORDER BY departure_time DESC) as next_departure_time
-FROM
-  stop_departure_train
-ORDER BY
-  stop_id,
-  departure_time;
-
--- Find earliest stop after 7.00am
-CREATE OR REPLACE VIEW stop_first_peak_service_train AS
-SELECT 
-  stop_id,
-  MIN (departure_time)
-FROM 
-  stop_departure_intervals_train
-GROUP BY
-  stop_id
-ORDER BY
-  stop_id;
-
--- Find stops with a peak service commencement before 7.30am
-CREATE OR REPLACE VIEW stop_first_service_before_0730_train AS
-SELECT
-  stop_id
-FROM
-  stop_first_peak_service_train
-WHERE
-  min <= '07:30:00';
-
--- Find latest stop before 7.00pm
-CREATE OR REPLACE VIEW stop_last_peak_service_train AS
-SELECT 
-  stop_id,
-  MAX (departure_time)
-FROM 
-  stop_departure_intervals_train
-GROUP BY
-  stop_id
-ORDER BY
-  stop_id;
-
--- Find stops with a peak service after 6.30pm
-CREATE OR REPLACE VIEW stop_last_service_after_1830_train AS
-SELECT
-  stop_id
-FROM
-  stop_last_peak_service_train
-WHERE
-  max >= '18:30:00';
-
--- Find maximum interval between services for stops with a service before 7.30am and after 6.30pm 
-CREATE OR REPLACE VIEW stop_max_interval_train AS
-SELECT 
-  s.stop_id, 
-  MAX (s.next_departure_time - s.departure_time) AS max_interval
-FROM 
-  stop_departure_intervals_train AS s,
-  stop_first_service_before_0730_train AS f,
-  stop_last_service_after_1830_train AS l
-WHERE
-  s.next_departure_time IS NOT NULL AND
-  s.stop_id = f.stop_id AND
-  s.stop_id = l.stop_id
-GROUP BY
-  s.stop_id
-ORDER BY
-  s.stop_id;
-
-DROP TABLE IF EXISTS stop_30_mins_train;
-CREATE TABLE stop_30_mins_train AS
-SELECT 
-  s.agency_id,
-  s.stop_id,
-  s.stop_name,
-  s.stop_lat, 
-  s.stop_lon,
-  s.route_color,
-  s.geom,
-  (SELECT EXTRACT(epoch FROM i.max_interval)/60) AS max_interval
-FROM
-  stop_train AS s,
-  stop_max_interval_train AS i 
-WHERE 
-  s.stop_id = i.stop_id AND
-  i.max_interval <= '00:30:00';
-
-RETURN QUERY SELECT stop_id FROM stop_30_mins_train;
-  
-END;
-$$ LANGUAGE plpgsql;
-
-
-
--- after the stored procedures have been defined, this generates the dates for each stop_id where that stop_id provides a 30 minute frequency service
-DROP TABLE IF EXISTS train_30_min_stops_by_date;
-CREATE TABLE train_30_min_stops_by_date AS
-SELECT DISTINCT
-  date_numeric,
-  train_30_min_stops(to_date(to_char(date_numeric, '99999999'), 'YYYYMMDD')) stop_id
-FROM
-  calendar_extent
-ORDER BY
-  date_numeric;
-  
--- view the results
-SELECT
-  date_numeric,
-  count(stop_id)
-FROM
-  (SELECT DISTINCT * FROM train_30_min_stops_by_date) t
-GROUP BY
-  date_numeric
-ORDER BY
-  date_numeric;
-
--- create the crosstab query
-DROP TABLE IF EXISTS train_stop_dow;
-CREATE TABLE train_stop_dow AS
-SELECT * FROM crosstab (
-  'SELECT DISTINCT
-    stop_id,
-    extract(dow from to_date(to_char(date_numeric, ''99999999''), ''YYYYMMDD''))::int AS dow,
-	count(date_numeric) dow_count
-  FROM
-    (SELECT DISTINCT * FROM train_30_min_stops_by_date) t
-  -- exclude school holiday periods and data issues whereby core rail services are not in the timetable from ?
-  WHERE
-    date_numeric BETWEEN 20181008 AND 20181205
-  GROUP BY
-    stop_id,
-    dow
-  ORDER BY
-    stop_id,
-    dow',
-  'SELECT * FROM generate_series(0, 6) ORDER BY 1'
-)
-  AS (
-    stop_id text,
-	sunday int,
-	monday int,
-	tuesday int,
-	wednesday int,
-	thursday int,
-	friday int,
-	saturday int
-)
-;
-
--- this generates a table that summarises the maximum number of days a stop_id could be a 30 minute stop by dow
-DROP TABLE IF EXISTS calendar_train_maximum;
-CREATE TABLE calendar_train_maximum AS
-SELECT * FROM crosstab (
-  'SELECT DISTINCT
-    stop_id,
-    dow,
-    count(date_numeric) dow_count
-  FROM
-    stops,
-    calendar_extent
-  WHERE
-    date_numeric BETWEEN 20181008 AND 20181205
-  GROUP BY
-    stop_id,
-    dow
-  ORDER BY
-    stop_id ASC,
-    dow ASC',
-  'SELECT * FROM generate_series(0, 6) ORDER BY 1'
-)
-  AS (
-    stop_id text,
-	sunday int,
-	monday int,
-	tuesday int,
-	wednesday int,
-	thursday int,
-	friday int,
-	saturday int
-)
-;
-
-DROP TABLE IF EXISTS train_stop_pcent;
-CREATE TABLE train_stop_pcent AS
-SELECT
-  b.stop_id,
-  100*(coalesce(b.monday,0) + coalesce(b.tuesday,0) + coalesce(b.wednesday,0) + coalesce(b.thursday,0) + coalesce(b.friday,0))/(m.monday + m.tuesday + m.wednesday + m.thursday + m.friday)::decimal weekday_pcent
-FROM
-  train_stop_dow b INNER JOIN calendar_train_maximum m ON b.stop_id = m.stop_id;
-
-DROP TABLE IF EXISTS stop_30_mins_train_final;
-CREATE TABLE stop_30_mins_train_final AS
-SELECT DISTINCT
-  s.agency_id,
-  s.stop_id,
-  s.stop_name,
-  s.stop_lat, 
-  s.stop_lon,
-  s.route_color,
-  s.geom
-FROM
-  stop_train s,
-  train_stop_pcent p
-WHERE 
-  s.stop_id = p.stop_id AND
-  p.weekday_pcent > 90;
-
----------------------------
--- BUS interval analysis --
----------------------------
-
--- after the stored procedures have been defined, this generates the dates for each stop_id where that stop_id provides a 30 minute frequency service
-DROP TABLE IF EXISTS bus_30_min_stops_by_date;
-CREATE TABLE bus_30_min_stops_by_date AS
-SELECT DISTINCT
-  date_numeric,
-  bus_30_min_stops(to_date(to_char(date_numeric, '99999999'), 'YYYYMMDD')) stop_id
-FROM
-  calendar_extent
-ORDER BY
-  date_numeric;
-  
--- view the results
-SELECT
-  date_numeric,
-  count(stop_id)
-FROM
-  (SELECT DISTINCT * FROM bus_30_min_stops_by_date) t
-GROUP BY
-  date_numeric
-ORDER BY
-  date_numeric;
-
--- create the crosstab query
-DROP TABLE IF EXISTS bus_stop_dow;
-CREATE TABLE bus_stop_dow AS
-SELECT * FROM crosstab (
-  'SELECT DISTINCT
-    stop_id,
-    extract(dow from to_date(to_char(date_numeric, ''99999999''), ''YYYYMMDD''))::int AS dow,
-	count(date_numeric) dow_count
-  FROM
-    (SELECT DISTINCT * FROM bus_30_min_stops_by_date) t
-	-- exclude school holiday periods
-  WHERE
-    date_numeric BETWEEN 20181008 AND 20181205
-  GROUP BY
-    stop_id,
-    dow
-  ORDER BY
-    stop_id,
-    dow',
-  'SELECT * FROM generate_series(0, 6) ORDER BY 1'
-)
-  AS (
-    stop_id text,
-	sunday int,
-	monday int,
-	tuesday int,
-	wednesday int,
-	thursday int,
-	friday int,
-	saturday int
-)
-;
-
--- this generates a table that summarises the maximum number of days a stop_id could be a 30 minute stop by dow
-DROP TABLE IF EXISTS calendar_bus_maximum;
-CREATE TABLE calendar_bus_maximum AS
-SELECT * FROM crosstab (
-  'SELECT DISTINCT
-    stop_id,
-    dow,
-    count(date_numeric) dow_count
-  FROM
-    stops,
-    calendar_extent
-  WHERE
-    date_numeric BETWEEN 20181008 AND 20181205
-  GROUP BY
-    stop_id,
-    dow
-  ORDER BY
-    stop_id ASC,
-    dow ASC',
-  'SELECT * FROM generate_series(0, 6) ORDER BY 1'
-)
-  AS (
-    stop_id text,
-	sunday int,
-	monday int,
-	tuesday int,
-	wednesday int,
-	thursday int,
-	friday int,
-	saturday int
-)
-;
-
-DROP TABLE IF EXISTS bus_stop_pcent;
-CREATE TABLE bus_stop_pcent AS
-SELECT
-  b.stop_id,
-  100*(coalesce(b.monday,0) + coalesce(b.tuesday,0) + coalesce(b.wednesday,0) + coalesce(b.thursday,0) + coalesce(b.friday,0))/(m.monday + m.tuesday + m.wednesday + m.thursday + m.friday)::decimal weekday_pcent
-FROM
-  bus_stop_dow b INNER JOIN calendar_bus_maximum m ON b.stop_id = m.stop_id;
-
-DROP TABLE IF EXISTS stop_30_mins_bus_final;
-CREATE TABLE stop_30_mins_bus_final AS
-SELECT DISTINCT
-  s.agency_id,
-  s.stop_id,
-  s.stop_name,
-  s.stop_lat, 
-  s.stop_lon,
-  s.route_color,
-  s.geom
-FROM
-  stop_bus s,
-  bus_stop_pcent p
-WHERE 
-  s.stop_id = p.stop_id AND
-  p.weekday_pcent > 90;
-  
----------------------------
--- TRAM interval analysis --
----------------------------
-
--- after the stored procedures have been defined, this generates the dates for each stop_id where that stop_id provides a 30 minute frequency service
-DROP TABLE IF EXISTS tram_30_min_stops_by_date;
-CREATE TABLE tram_30_min_stops_by_date AS
-SELECT DISTINCT
-  date_numeric,
-  tram_30_min_stops(to_date(to_char(date_numeric, '99999999'), 'YYYYMMDD')) stop_id
-FROM
-  calendar_extent
-ORDER BY
-  date_numeric;
-  
--- view the results
-SELECT
-  date_numeric,
-  count(stop_id)
-FROM
-  (SELECT DISTINCT * FROM tram_30_min_stops_by_date) t
-GROUP BY
-  date_numeric
-ORDER BY
-  date_numeric;
-
--- create the crosstab query
-DROP TABLE IF EXISTS tram_stop_dow;
-CREATE TABLE tram_stop_dow AS
-SELECT * FROM crosstab (
-  'SELECT DISTINCT
-    stop_id,
-    extract(dow from to_date(to_char(date_numeric, ''99999999''), ''YYYYMMDD''))::int AS dow,
-	count(date_numeric) dow_count
-  FROM
-    (SELECT DISTINCT * FROM tram_30_min_stops_by_date) t
-	-- exclude school holiday periods
-  WHERE
-    date_numeric BETWEEN 20181008 AND 20181205
-  GROUP BY
-    stop_id,
-    dow
-  ORDER BY
-    stop_id,
-    dow',
-  'SELECT * FROM generate_series(0, 6) ORDER BY 1'
-)
-  AS (
-    stop_id text,
-	sunday int,
-	monday int,
-	tuesday int,
-	wednesday int,
-	thursday int,
-	friday int,
-	saturday int
-)
-;
-
--- this generates a table that summarises the maximum number of days a stop_id could be a 30 minute stop by dow
-DROP TABLE IF EXISTS calendar_tram_maximum;
-CREATE TABLE calendar_tram_maximum AS
-SELECT * FROM crosstab (
-  'SELECT DISTINCT
-    stop_id,
-    dow,
-    count(date_numeric) dow_count
-  FROM
-    stops,
-    calendar_extent
-  WHERE
-    date_numeric BETWEEN 20181008 AND 20181205
-  GROUP BY
-    stop_id,
-    dow
-  ORDER BY
-    stop_id ASC,
-    dow ASC',
-  'SELECT * FROM generate_series(0, 6) ORDER BY 1'
-)
-  AS (
-    stop_id text,
-	sunday int,
-	monday int,
-	tuesday int,
-	wednesday int,
-	thursday int,
-	friday int,
-	saturday int
-)
-;
-
-DROP TABLE IF EXISTS tram_stop_pcent;
-CREATE TABLE tram_stop_pcent AS
-SELECT
-  b.stop_id,
-  100*(coalesce(b.monday,0) + coalesce(b.tuesday,0) + coalesce(b.wednesday,0) + coalesce(b.thursday,0) + coalesce(b.friday,0))/(m.monday + m.tuesday + m.wednesday + m.thursday + m.friday)::decimal weekday_pcent
-FROM
-  tram_stop_dow b INNER JOIN calendar_tram_maximum m ON b.stop_id = m.stop_id;
-
-DROP TABLE IF EXISTS stop_30_mins_tram_final;
-CREATE TABLE stop_30_mins_tram_final AS
-SELECT DISTINCT
-  s.agency_id,
-  s.stop_id,
-  s.stop_name,
-  s.stop_lat, 
-  s.stop_lon,
-  s.route_color,
-  s.geom
-FROM
-  stop_tram s,
-  tram_stop_pcent p
-WHERE 
-  s.stop_id = p.stop_id AND
-  p.weekday_pcent > 90;
-   
+create_combined_analysis_results = '''
 ------------------------------
 -- Combine 30 minutes stops -- 
 ------------------------------
-DROP TABLE IF EXISTS stop_30_mins_final;
-CREATE TABLE stop_30_mins_final AS
+DROP TABLE IF EXISTS stop_{interval_short}_final;
+CREATE TABLE stop_{interval_short}_final AS
 SELECT
   *
 FROM (
