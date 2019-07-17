@@ -45,8 +45,8 @@ parser.add_argument('-dir',
                     type=valid_path)
 parser.add_argument('-reprocess',
                     help='Re-analyse GTFS feed if database already exists (default is False)',
-                    default=False,
-                    type=boolean)
+                    default=False, 
+                    action='store_true')
 args = parser.parse_args()
 
 sys.path.append(args.dir)
@@ -200,8 +200,8 @@ for root, dirs, files in os.walk(args.dir):
             print("\t- Check if sql database exists... "),
             sql =  '''SELECT 1 FROM pg_catalog.pg_database WHERE datname='{}';'''.format(name)
             curs.execute(sql)
-            conn.close()
             if len(curs.fetchall())!=0:
+              conn.close()
               print("Database already exists; skipping (assumed processed).")
               if args.reprocess:
                   print("\t- Creating frequent transport analysis functions... "),
