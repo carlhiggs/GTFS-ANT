@@ -160,13 +160,17 @@ for root, dirs, files in os.walk(args.dir):
             if len(curs.fetchall())!=0:
               print("Database already exists; skipping (assumed processed).")
               print("\t- Creating frequent transport analysis functions... "),
-              # curs.execute(create_gtfs_analysis_functions)
-              print(create_gtfs_analysis_functions)
-              # conn.commit()
+              conn.close()
+              # connect to new database
+              conn = psycopg2.connect(dbname=name, user=args.U, password=args.w)
+              curs = conn.cursor()
+              # print(create_gtfs_analysis_functions)
+              curs.execute(create_gtfs_analysis_functions)
+              conn.commit()
               print("Done.")
-              # print("\t- Performing GTFS analysis... "),
-              # curs.execute(gtfs_analysis)
-              # conn.commit()
+              print("\t- Performing GTFS analysis... "),
+              curs.execute(gtfs_analysis)
+              conn.commit()
               print("Done.")
               conn.close()
               continue
