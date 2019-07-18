@@ -9,11 +9,13 @@ import psycopg2         ,\
        datetime         ,\
        argparse         ,\
        itertools        ,\
+       pandas as pd     ,\
        subprocess as sp
 from sqlalchemy import create_engine
 from StringIO import StringIO
 from zipfile import ZipFile
 from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
+from sqlalchemy import create_engine
 
 cwd = os.path.dirname(sys.argv[0])
 print(cwd)
@@ -117,10 +119,7 @@ with open('_analyse_frequent_stops.py.sql', 'r') as myfile:
 
 time_format  ='%H:%M:%S'
 short_time   = '%H%M'
-
-
-
-                
+              
 print("Import GTFS feeds... ")
 for root, dirs, files in os.walk(args.dir):
   for file in files:
@@ -300,21 +299,57 @@ for root, dirs, files in os.walk(args.dir):
                     print("."),
               print(" Done.")
               conn.close()
+              
+print("\n Create or update final combined analyses... ")
+for root, dirs, files in os.walk(args.dir):
+  for file in files:
+    if file.endswith(".zip"):
+      print(" - {}".format(name))
+      name = os.path.splitext(file)[0]    
+      conn = psycopg2.connect(dbname=name, user=args.U, password=args.w)
+      curs = conn.cursor()
+      engine = create_engine("postgresql://{user}:{pwd}@{host}/{db}".format(user = args.U,
+                                                                            pwd  = args.w,
+                                                                            host = 'localhost',
+                                                                            db   = name))
+      create_combined_analysis_results = '''
+        ------------------------------
+        -- Combine 30 minutes stops -- 
+        ------------------------------
+        DROP TABLE IF EXISTS stop_0030_final;
+        CREATE TABLE stop_0030_final AS
+        SELECT
+          *
+        FROM (
+          SELECT * FROM train_0030_stop_final
+          UNION ALL
+          SELECT * FROM bus_0030_stop_final
+          UNION ALL
+          SELECT * FROM tram_0030_stop_final
+        ) s
+        ;
+        DROP TABLE IF EXISTS mode_freq_comparison;
+        CREATE TABLE mode_freq_comparison AS
+        SELECT bus_freq, 
+               bus,
+               round(100*(bus_freq / bus::float)::numeric,2) AS bus_freq_pct,
+               train_freq,
+               train, 
+               round(100*(train_freq / train::float)::numeric,2) AS train_freq_pct,
+               tram_freq, 
+               tram, 
+               round(100*(tram_freq / tram::float)::numeric,2) AS tram_freq_pct
+        FROM (SELECT 
+              (SELECT COUNT(*) FROM bus_0030_stop_final) AS bus_freq,
+              (SELECT COUNT(*) FROM stop_bus) AS bus,
+              (SELECT COUNT(*) FROM train_0030_stop_final) AS train_freq,
+              (SELECT COUNT(*) FROM stop_train) AS train,
+              (SELECT COUNT(*) FROM tram_0030_stop_final) AS tram_freq,
+              (SELECT COUNT(*) FROM stop_tram) AS tram) t;
+        '''
+      curs.execute(create_combined_analysis_results)
+      conn.commit()
+      df = pd.read_sql_table('mode_freq_comparison',con=engine)
+      print(df.to_string(index=False))
+      conn.close()
 
-create_combined_analysis_results = '''
-------------------------------
--- Combine 30 minutes stops -- 
-------------------------------
-DROP TABLE IF EXISTS stop_{interval_short}_final;
-CREATE TABLE stop_{interval_short}_final AS
-SELECT
-  *
-FROM (
-  SELECT * FROM stop_30_mins_train_final
-  UNION ALL
-  SELECT * FROM stop_30_mins_bus_final
-  UNION ALL
-  SELECT * FROM stop_30_mins_tram_final
-) s
-;
-'''
