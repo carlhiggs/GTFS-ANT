@@ -4,7 +4,7 @@ Carl Higgs, Healthy Liveable Cities group 2019
 This tool generalises General Transit Feed Specification (GTFS) analysis developed by the Healthy Liveable Cities group in work lead by Jonathan Arundel in 2017 through 2019 for Australian state transit agency GTFS feeds.
 
 ```
-usage: gtfs_to_psql.py [-h] [-db DB] [-U U] [-w W] [-dir DIR] [-reprocess]
+usage: gtfs_ant.py [-h] [-db DB] [-U U] [-w W] [-dir DIR] [-reprocess]
 
 Import GTFS feeds from zip files, creating databases as per filename, set up functions for analysis, and analyse for frequent transport
 

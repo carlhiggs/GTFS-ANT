@@ -1,5 +1,6 @@
 ## SQL cript to import GTFS data (for Victoria) to Postgresql
 ## Carl Higgs 20190713
+## Building on work of Jonathan Arundel (2017-2018)
 
 import psycopg2         ,\
        time             ,\
@@ -27,7 +28,7 @@ def valid_path(arg):
     else:
         return arg
   
-description = 'Import GTFS feeds from zip files, creating databases as per filename'
+description = 'Import GTFS feeds from zip files, creating databases as per filename, set up functions for analysis, and analyse for frequent transport'
 # Parse input arguments
 parser = argparse.ArgumentParser(description=description)
 parser.add_argument('-db',
