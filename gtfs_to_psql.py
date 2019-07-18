@@ -301,6 +301,29 @@ for root, dirs, files in os.walk(args.dir):
               conn.close()
               
 print("\n Create or update final combined analyses... ")
+
+## Sketch for parameterised construction of by mode sql queries - not implemented
+# union_tables_by_mode = []
+# summarise_tables_by_mode = []
+# from_tables_by_mode = []
+
+# for mode in modes:
+    # text = '''SELECT * FROM {mode}_0030_stop_final'''.format(mode = mode)
+    # union_tables_by_mode = union_tables_by_mode.append(text)
+    # text = '''
+    # {mode}_freq, 
+    # {mode},
+    # round(100*({mode}_freq / {mode}::float)::numeric,2) AS {mode}_freq_pct'''.format(mode = mode)
+    # summarise_tables_by_mode = summarise_tables_by_mode.append(text)
+    # text = '''
+    # (SELECT COUNT(*) FROM {mode}_0030_stop_final) AS {mode}_freq,
+    # (SELECT COUNT(*) FROM stop_{mode}) AS {mode}'''.format(mode = mode)
+    # from_tables_by_mode = from_tables_by_mode.append(text)
+    
+# union_tables_by_mode = '\nUNION ALL\n'.join(union_tables_by_mode)
+# summarise_tables_by_mode = ','.join(summarise_tables_by_mode)
+# from_tables_by_mode = ','.join(from_tables_by_mode)
+
 for root, dirs, files in os.walk(args.dir):
   for file in files:
     if file.endswith(".zip"):
