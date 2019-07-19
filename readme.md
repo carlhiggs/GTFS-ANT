@@ -1,7 +1,7 @@
 # GTFS ANalysis Tool (gtfs_ant)
-Carl Higgs, Healthy Liveable Cities group 2019
+Carl Higgs and Jonathan Arundel, Healthy Liveable Cities group 2019
 
-This tool generalises General Transit Feed Specification (GTFS) analysis developed by the Healthy Liveable Cities group in work lead by Jonathan Arundel in 2017 through 2019 for Australian state transit agency GTFS feeds.
+This tool generalises General Transit Feed Specification (GTFS) analysis developed by the Healthy Liveable Cities group in work led by Jonathan Arundel in 2017 through 2019 for Australian state transit agency GTFS feeds.
 
 ```
 usage: gtfs_ant.py [-h] [-db DB] [-U U] [-w W] [-dir DIR] [-reprocess]
