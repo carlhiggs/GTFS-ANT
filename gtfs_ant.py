@@ -96,9 +96,9 @@ ________________________________________________________________________________
 
 # define modes for GTFS feed(s) as per agency_id codes in agency.txt below
 modes = {
-         'tram' :{'route_types':[0], 'agency_ids':[3]  , 'start_times':['07:00:00'],'end_times':['19:00:00'],'intervals':['00:30:00']},
-         'train':{'route_types':[1], 'agency_ids':[1,2], 'start_times':['07:00:00'],'end_times':['19:00:00'],'intervals':['00:30:00']},
-         'bus'  :{'route_types':[3], 'agency_ids':[4,6], 'start_times':['07:00:00'],'end_times':['19:00:00'],'intervals':['00:30:00']}
+         'tram' :{'route_types':[0], 'custom_mode':"routes.agency_id  IN ('3')" , 'start_times':['07:00:00'],'end_times':['19:00:00'],'intervals':['00:30:00']},
+         'train':{'route_types':[1,2], 'custom_mode':"routes.agency_id  IN ('1','2')" , 'start_times':['07:00:00'],'end_times':['19:00:00'],'intervals':['00:30:00']},
+         'bus'  :{'route_types':[3], 'custom_mode':"routes.agency_id  IN ('4','6')" , 'start_times':['07:00:00'],'end_times':['19:00:00'],'intervals':['00:30:00']}
          }
 ________________________________________________________________________________________________________________________________________
 
