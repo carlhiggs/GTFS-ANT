@@ -14,8 +14,7 @@ optional arguments:
   -U U        SQL user
   -w W        SQL password
   -dir DIR    Folder containing zipped GTFS data
-  -reprocess  Re-analyse GTFS feed if database already exists (default is
-              False)
+  -reprocess  Re-analyse GTFS feed if database already exists (default is False)
 ```
 
 It is recommended that you ensure your GTFS file names are
