@@ -27,9 +27,10 @@ WHERE
   -- daytime {mode} services
   stop_times.departure_time BETWEEN '{start_time}' AND '{end_time}' AND
   routes.route_type IN ({route_types}) AND
-  routes.agency_id  IN ('{agency_ids}') AND
   -- offered on service_date
   calendar_series.date = to_number(to_char(service_date, 'YYYYMMDD'), '99999999')
+  -- custom clause, for example: routes.agency_id  IN ('1','2') 
+  {custom_mode}
 ORDER BY
   trip_id,
   stop_sequence;
@@ -109,7 +110,7 @@ ORDER BY
 DROP TABLE IF EXISTS stop_{interval_short}_{mode};
 CREATE TABLE stop_{interval_short}_{mode} AS
 SELECT 
-  s.agency_id,
+  s.route_type,
   s.stop_id,
   s.stop_name,
   s.stop_lat, 

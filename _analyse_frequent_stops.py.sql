@@ -129,8 +129,8 @@ WHERE
   stop_times.trip_id = trips.trip_id AND
   trips.route_id = routes.route_id AND
   -- allow for consideration of both metropolitan and regional trains
-  routes.route_type IN ({route_types}) AND
-  routes.agency_id  IN ('{agency_ids}')
+  routes.route_type IN ({route_types})
+  {custom_mode}
 GROUP BY
   routes.route_type,
   routes.agency_id,

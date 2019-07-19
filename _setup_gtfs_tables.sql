@@ -43,7 +43,9 @@ CREATE TABLE routes
   agency_id         text NULL,
   route_short_name  text NULL,
   route_long_name   text NOT NULL,
+  route_desc        text NULL,
   route_type        integer NULL,
+  route_url         text NULL,
   route_color       text NULL,
   route_text_color  text NULL
 );
@@ -69,15 +71,22 @@ CREATE TABLE stop_times
   stop_headsign     text NULL,
   pickup_type       integer NULL CHECK(pickup_type >= 0 and pickup_type <=3),
   drop_off_type     integer NULL CHECK(drop_off_type >= 0 and drop_off_type <=3),
+  timepoint         integer NULL,
   shape_dist_traveled text NULL
 );
-
 CREATE TABLE stops
 (
   stop_id           text PRIMARY KEY,
   stop_name         text NOT NULL,
   stop_lat          wgs84_lat NOT NULL,
-  stop_lon          wgs84_lon NOT NULL
+  stop_lon          wgs84_lon NOT NULL,
+  zone_id           text NULL,
+  stop_code         text NULL,
+  stop_desc     	text NULL,
+  stop_url          text NULL,
+  location_type     text NULL,
+  parent_station    text NULL,
+  district          text NULL
 );
 
 CREATE TABLE trips
@@ -87,5 +96,6 @@ CREATE TABLE trips
   trip_id           text NOT NULL PRIMARY KEY,
   shape_id          text NULL,
   trip_headsign     text NULL,
+  block_id          text NULL,
   direction_id      boolean NULL
 );

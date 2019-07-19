@@ -11,6 +11,7 @@ import psycopg2         ,\
        argparse         ,\
        itertools        ,\
        pandas as pd     ,\
+       csv              ,\
        subprocess as sp
 from sqlalchemy import create_engine
 from StringIO import StringIO
@@ -48,6 +49,10 @@ parser.add_argument('-dir',
                     type=valid_path)
 parser.add_argument('-reprocess',
                     help='Re-analyse GTFS feed if database already exists (default is False)',
+                    default=False, 
+                    action='store_true')
+parser.add_argument('-debug',
+                    help='Print additional data useful for debugging purposes',
                     default=False, 
                     action='store_true')
 args = parser.parse_args()
@@ -154,6 +159,8 @@ for root, dirs, files in os.walk(args.dir):
                   print("\t\t  - Analysis time: {} to {}".format(buffer_start.strftime(short_time) ,
                                                                                    buffer_end.strftime(short_time)))
                   print("\t\t  - Analysis inverval: {} (HHMM) freq".format(interval.strftime(short_time)))
+                  if modes[mode]['custom_mode'] != '':
+                    modes[mode]['custom_mode'] = 'AND {}'.format(modes[mode]['custom_mode'])
                   create_gtfs_analysis_functions = '{}\n{}'.format(create_gtfs_analysis_functions,
                                                                   freq_analysis_function.format(
                      mode               = mode                                     ,
@@ -166,7 +173,7 @@ for root, dirs, files in os.walk(args.dir):
                      interval           = interval.strftime(time_format)            ,
                      interval_short     = interval.strftime(short_time)            ,
                      route_types        = ",".join(['{}'.format(x) for x in modes[mode]['route_types']]),
-                     agency_ids         = "','".join(['{}'.format(x) for x in modes[mode]['agency_ids']])
+                     custom_mode        = modes[mode]['custom_mode']
                   ))
                   gtfs_analysis = '{}\n{}'.format(gtfs_analysis,
                                                   freq_analysis.format(
@@ -182,7 +189,7 @@ for root, dirs, files in os.walk(args.dir):
                      interval           = interval.strftime(time_format)            ,
                      interval_short     = interval.strftime(short_time)            ,
                      route_types        = ",".join(['{}'.format(x) for x in modes[mode]['route_types']]),
-                     agency_ids         = "','".join(['{}'.format(x) for x in modes[mode]['agency_ids']])
+                     custom_mode        = modes[mode]['custom_mode']
                   ))
                   print("\t\t  - SQL function: {mode}_{interval_short}_stops(date)".format( mode = mode,
                       interval_short = interval.strftime(short_time)))
@@ -244,37 +251,33 @@ for root, dirs, files in os.walk(args.dir):
               conn.close()
               for table in ['agency','calendar','calendar_dates','routes','shapes','stop_times','stops','trips']:
                 print("\t\t{}... ".format(table)),
+                conn = psycopg2.connect(dbname=name, user=args.U, password=args.w)
+                curs = conn.cursor()
+                # check expected columns in table, as exists in database
+                sql = '''SELECT column_name FROM information_schema.columns WHERE table_name   = '{}';'''.format(table)
+                curs.execute(sql)
+                columns_expected = [x[0] for x in curs.fetchall()]
                 with myzip.open('{}.txt'.format(table)) as myfile:
+                  # retrieve column headers from file
+                  csv_data = csv.reader(myfile)
+                  columns_observed = [x.decode("utf-8-sig").encode('utf-8') for x in csv_data.next()]
+                  columns_available = [x for x in columns_observed if x in columns_expected]
+                  if args.debug:
+                      print('\nExpected: {}'.format(columns_expected)),
+                      print('\nObserved: {}'.format(columns_observed)),
+                      print('\nAvailable: {}'.format(columns_available))
                   try:
-                    conn = psycopg2.connect(dbname=name, user=args.U, password=args.w)
-                    curs = conn.cursor()
-                    sql = '''COPY {table} FROM STDIN WITH CSV HEADER;'''.format(table = table)
+                    sql = '''
+                    COPY {table} ({columns}) FROM STDIN WITH CSV HEADER;
+                    '''.format(table = table,columns = ','.join(columns_available))
                     curs.copy_expert(sql, myfile)
                     conn.commit()
                     curs.close()
                     conn.close()
                   except:
-                    print("\n\t\t- Issue found... ".format(table))
-                    if table=='routes':
-                      conn = psycopg2.connect(dbname=name, user=args.U, password=args.w)
-                      curs = conn.cursor()
-                      # known likely issue with legacy feeds, not having route colour variable
-                      # so we try again and specify specific fields in hope it works
-                      sql = '''
-                      COPY {table} 
-                           (route_id,agency_id,route_short_name,route_long_name,route_type) 
-                      FROM STDIN WITH CSV HEADER;
-                      '''.format(table = table)
-                      print("\t\t- Re-attempting to import data for routes table with query {}... ".format(sql)),
-                      with myzip.open('{}.txt'.format(table)) as myfile:
-                        curs.copy_expert(sql, myfile)
-                        conn.commit()
-                        curs.close()
-                        conn.close()
-                    else:
-                        print("  failed.")
-                        conn.close()
-                        raise
+                    print("\n\t\t- Import failed.")
+                    conn.close()
+                    raise
                 print("Done.")
               conn = psycopg2.connect(dbname=name, user=args.U, password=args.w)
               curs = conn.cursor()
@@ -306,27 +309,27 @@ for root, dirs, files in os.walk(args.dir):
               
 print("\n Create or update final combined analyses... ")
 
-## Sketch for parameterised construction of by mode sql queries - not implemented
-# union_tables_by_mode = []
-# summarise_tables_by_mode = []
-# from_tables_by_mode = []
+# Sketch for parameterised construction of by mode sql queries - not implemented
+union_tables_by_mode = []
+summarise_tables_by_mode = []
+from_tables_by_mode = []
 
-# for mode in modes:
-    # text = '''SELECT * FROM {mode}_0030_stop_final'''.format(mode = mode)
-    # union_tables_by_mode = union_tables_by_mode.append(text)
-    # text = '''
-    # {mode}_freq, 
-    # {mode},
-    # round(100*({mode}_freq / {mode}::float)::numeric,2) AS {mode}_freq_pct'''.format(mode = mode)
-    # summarise_tables_by_mode = summarise_tables_by_mode.append(text)
-    # text = '''
-    # (SELECT COUNT(*) FROM {mode}_0030_stop_final) AS {mode}_freq,
-    # (SELECT COUNT(*) FROM stop_{mode}) AS {mode}'''.format(mode = mode)
-    # from_tables_by_mode = from_tables_by_mode.append(text)
+for mode in modes:
+    text = '''SELECT * FROM {mode}_0030_stop_final'''.format(mode = mode)
+    union_tables_by_mode.append(text)
+    text = '''
+    {mode}_freq, 
+    {mode},
+    round(100*({mode}_freq /NULLIF({mode}::float,0))::numeric,2) AS {mode}_freq_pct'''.format(mode = mode)
+    summarise_tables_by_mode.append(text)
+    text = '''
+    (SELECT COUNT(*) FROM {mode}_0030_stop_final) AS {mode}_freq,
+    (SELECT COUNT(*) FROM stop_{mode}) AS {mode}'''.format(mode = mode)
+    from_tables_by_mode.append(text)
     
-# union_tables_by_mode = '\nUNION ALL\n'.join(union_tables_by_mode)
-# summarise_tables_by_mode = ','.join(summarise_tables_by_mode)
-# from_tables_by_mode = ','.join(from_tables_by_mode)
+union_tables_by_mode = '\nUNION ALL\n'.join(union_tables_by_mode)
+summarise_tables_by_mode = ','.join(summarise_tables_by_mode)
+from_tables_by_mode = ','.join(from_tables_by_mode)
 
 for root, dirs, files in os.walk(args.dir):
   for file in files:
@@ -348,32 +351,18 @@ for root, dirs, files in os.walk(args.dir):
         SELECT
           *
         FROM (
-          SELECT * FROM train_0030_stop_final
-          UNION ALL
-          SELECT * FROM bus_0030_stop_final
-          UNION ALL
-          SELECT * FROM tram_0030_stop_final
+          {union_tables_by_mode}
         ) s
         ;
         DROP TABLE IF EXISTS mode_freq_comparison;
         CREATE TABLE mode_freq_comparison AS
-        SELECT bus_freq, 
-               bus,
-               round(100*(bus_freq / bus::float)::numeric,2) AS bus_freq_pct,
-               train_freq,
-               train, 
-               round(100*(train_freq / train::float)::numeric,2) AS train_freq_pct,
-               tram_freq, 
-               tram, 
-               round(100*(tram_freq / tram::float)::numeric,2) AS tram_freq_pct
+        SELECT {summarise_tables_by_mode}
         FROM (SELECT 
-              (SELECT COUNT(*) FROM bus_0030_stop_final) AS bus_freq,
-              (SELECT COUNT(*) FROM stop_bus) AS bus,
-              (SELECT COUNT(*) FROM train_0030_stop_final) AS train_freq,
-              (SELECT COUNT(*) FROM stop_train) AS train,
-              (SELECT COUNT(*) FROM tram_0030_stop_final) AS tram_freq,
-              (SELECT COUNT(*) FROM stop_tram) AS tram) t;
-        '''
+              {from_tables_by_mode}
+              ) t;
+        '''.format(union_tables_by_mode = union_tables_by_mode,
+                   summarise_tables_by_mode = summarise_tables_by_mode,
+                   from_tables_by_mode = from_tables_by_mode)
       curs.execute(create_combined_analysis_results)
       conn.commit()
       df = pd.read_sql_table('mode_freq_comparison',con=engine)
