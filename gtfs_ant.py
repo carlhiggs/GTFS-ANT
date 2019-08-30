@@ -160,7 +160,8 @@ for root, dirs, files in os.walk(args.dir):
                                                                                    buffer_end.strftime(short_time)))
                   print("\t\t  - Analysis inverval: {} (HHMM) freq".format(interval.strftime(short_time)))
                   if modes[mode]['custom_mode'] != '':
-                    modes[mode]['custom_mode'] = 'AND {}'.format(modes[mode]['custom_mode'])
+                    modes[mode]['custom_mode'] = 'AND {}'.format(modes[mode]['custom_mode']).replace('AND AND','AND')
+                    
                   create_gtfs_analysis_functions = '{}\n{}'.format(create_gtfs_analysis_functions,
                                                                   freq_analysis_function.format(
                      mode               = mode                                     ,
@@ -295,6 +296,7 @@ for root, dirs, files in os.walk(args.dir):
               curs.execute(sql)
               conn.commit()
               print("\t- Creating frequent transport analysis functions... "),
+              # print(create_gtfs_analysis_functions)
               curs.execute(create_gtfs_analysis_functions)
               conn.commit()
               print("Done.")
@@ -309,63 +311,67 @@ for root, dirs, files in os.walk(args.dir):
               
 print("\n Create or update final combined analyses... ")
 
-# Sketch for parameterised construction of by mode sql queries - not implemented
-union_tables_by_mode = []
-summarise_tables_by_mode = []
-from_tables_by_mode = []
 
-for mode in modes:
-    text = '''SELECT * FROM {mode}_0030_stop_final'''.format(mode = mode)
-    union_tables_by_mode.append(text)
-    text = '''
-    {mode}_freq, 
-    {mode},
-    round(100*({mode}_freq /NULLIF({mode}::float,0))::numeric,2) AS {mode}_freq_pct'''.format(mode = mode)
-    summarise_tables_by_mode.append(text)
-    text = '''
-    (SELECT COUNT(*) FROM {mode}_0030_stop_final) AS {mode}_freq,
-    (SELECT COUNT(*) FROM stop_{mode}) AS {mode}'''.format(mode = mode)
-    from_tables_by_mode.append(text)
-    
-union_tables_by_mode = '\nUNION ALL\n'.join(union_tables_by_mode)
-summarise_tables_by_mode = ','.join(summarise_tables_by_mode)
-from_tables_by_mode = ','.join(from_tables_by_mode)
+# parameterised construction of by mode-interval sql queries
+for interval in modes[mode]['intervals']:
+    interval  = interval.replace(':','')[:4]
+    print("\nFrequency: {}".format(interval))
+    union_tables_by_mode = []
+    summarise_tables_by_mode = []
+    from_tables_by_mode = []
+    for mode in modes:
+        text = '''SELECT * FROM {mode}_{interval}_stop_final'''.format(mode = mode,interval = interval)
+        union_tables_by_mode.append(text)
+        text = '''
+        {mode}_freq, 
+        {mode},
+        round(100*({mode}_freq /NULLIF({mode}::float,0))::numeric,2) AS {mode}_freq_pct'''.format(mode = mode)
+        summarise_tables_by_mode.append(text)
+        text = '''
+        (SELECT COUNT(*) FROM {mode}_{interval}_stop_final) AS {mode}_freq,
+        (SELECT COUNT(*) FROM stop_{mode}) AS {mode}'''.format(mode = mode,interval = interval)
+        from_tables_by_mode.append(text)
+        
+    union_tables_by_mode = '\nUNION ALL\n'.join(union_tables_by_mode)
+    summarise_tables_by_mode = ','.join(summarise_tables_by_mode)
+    from_tables_by_mode = ','.join(from_tables_by_mode)
 
-for root, dirs, files in os.walk(args.dir):
-  for file in files:
-    if file.endswith(".zip"):
-      print(" - {}".format(name))
-      name = os.path.splitext(file)[0]    
-      conn = psycopg2.connect(dbname=name, user=args.U, password=args.w)
-      curs = conn.cursor()
-      engine = create_engine("postgresql://{user}:{pwd}@{host}/{db}".format(user = args.U,
-                                                                            pwd  = args.w,
-                                                                            host = 'localhost',
-                                                                            db   = name))
-      create_combined_analysis_results = '''
-        ------------------------------
-        -- Combine 30 minutes stops -- 
-        ------------------------------
-        DROP TABLE IF EXISTS stop_0030_final;
-        CREATE TABLE stop_0030_final AS
-        SELECT
-          *
-        FROM (
-          {union_tables_by_mode}
-        ) s
-        ;
-        DROP TABLE IF EXISTS mode_freq_comparison;
-        CREATE TABLE mode_freq_comparison AS
-        SELECT {summarise_tables_by_mode}
-        FROM (SELECT 
-              {from_tables_by_mode}
-              ) t;
-        '''.format(union_tables_by_mode = union_tables_by_mode,
-                   summarise_tables_by_mode = summarise_tables_by_mode,
-                   from_tables_by_mode = from_tables_by_mode)
-      curs.execute(create_combined_analysis_results)
-      conn.commit()
-      df = pd.read_sql_table('mode_freq_comparison',con=engine)
-      print(df.to_string(index=False))
-      conn.close()
+    for root, dirs, files in os.walk(args.dir):
+      for file in files:
+        if file.endswith(".zip"):
+          print(" - {}".format(name))
+          name = os.path.splitext(file)[0]    
+          conn = psycopg2.connect(dbname=name, user=args.U, password=args.w)
+          curs = conn.cursor()
+          engine = create_engine("postgresql://{user}:{pwd}@{host}/{db}".format(user = args.U,
+                                                                                pwd  = args.w,
+                                                                                host = 'localhost',
+                                                                                db   = name))
+          create_combined_analysis_results = '''
+            ------------------------------
+            -- Combine {interval} minute stops -- 
+            ------------------------------
+            DROP TABLE IF EXISTS stop_{interval}_final;
+            CREATE TABLE stop_{interval}_final AS
+            SELECT
+              *
+            FROM (
+              {union_tables_by_mode}
+            ) s
+            ;
+            DROP TABLE IF EXISTS mode_{interval}_freq_comparison;
+            CREATE TABLE mode_{interval}_freq_comparison AS
+            SELECT {summarise_tables_by_mode}
+            FROM (SELECT 
+                  {from_tables_by_mode}
+                  ) t;
+            '''.format(interval = interval,
+                       union_tables_by_mode = union_tables_by_mode,
+                       summarise_tables_by_mode = summarise_tables_by_mode,
+                       from_tables_by_mode = from_tables_by_mode)
+          curs.execute(create_combined_analysis_results)
+          conn.commit()
+          df = pd.read_sql_table('mode_{}_freq_comparison'.format(interval),con=engine)
+          print(df.to_string(index=False))
+          conn.close()
 
