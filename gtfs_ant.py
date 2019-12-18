@@ -339,8 +339,8 @@ for interval in modes[mode]['intervals']:
     for root, dirs, files in os.walk(args.dir):
       for file in files:
         if file.endswith(".zip"):
-          print(" - {}".format(name))
           name = os.path.splitext(file)[0]    
+          print(" - {}".format(name))
           conn = psycopg2.connect(dbname=name, user=args.U, password=args.w)
           curs = conn.cursor()
           engine = create_engine("postgresql://{user}:{pwd}@{host}/{db}".format(user = args.U,
