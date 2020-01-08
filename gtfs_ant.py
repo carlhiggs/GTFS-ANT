@@ -269,7 +269,7 @@ for root, dirs, files in os.walk(args.dir):
                       print('\nAvailable: {}'.format(columns_available))
                   try:
                     sql = '''
-                    COPY {table} ({columns}) FROM STDIN WITH CSV HEADER;
+                    COPY {table} ({columns}) FROM STDIN WITH CSV HEADER DELIMITER ',' QUOTE '"';
                     '''.format(table = table,columns = ','.join(columns_available))
                     curs.copy_expert(sql, myfile)
                     conn.commit()
